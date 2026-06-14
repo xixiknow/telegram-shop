@@ -1,0 +1,84 @@
+# ===========================================
+# Telegram Shop 配置文件
+# ===========================================
+
+server:
+  # HTTP 服务监听地址（用于支付回调 webhook + 健康检查）
+  addr: ":8080"
+  # 对外可访问的基础 URL（用于拼接支付回调地址）
+  base_url: "https://shop.yourdomain.com"
+
+telegram:
+  # 从 @BotFather 获取的 Bot Token
+  bot_token: "YOUR_BOT_TOKEN_HERE"
+  # 是否使用 webhook 模式（false = long polling，开发推荐 polling）
+  use_webhook: false
+  # webhook 模式下 Telegram 回调的路径
+  webhook_path: "/telegram/webhook"
+  # 管理员的 Telegram User ID（可多个），用于 /admin 命令
+  admin_ids:
+    - 123456789
+
+# 可购买的充值额度（单位：元）。菜单按此顺序生成按钮。
+amounts:
+  - 5
+  - 10
+  - 20
+  - 50
+  - 100
+  - 200
+  - 500
+
+database:
+  # PostgreSQL DSN
+  dsn: "host=localhost port=5432 user=postgres password=password dbname=telegram_shop sslmode=disable TimeZone=Asia/Shanghai"
+
+payment:
+  # 订单有效期（分钟）
+  order_timeout_minutes: 30
+
+  easypay:
+    enabled: true
+    # Dulupay 易支付网关地址（默认 https://api.dulupay.com，调用 /mapi.php）
+    gateway_url: "https://api.dulupay.com"
+    # 商户 ID（Dulupay 后台「个人资料 -> API 信息」中的 PID）
+    merchant_id: "10001"
+    # 商户密钥（Dulupay 后台的 KEY，V2 MD5 签名使用）
+    merchant_key: "your_dulupay_merchant_key"
+    # 默认支付通道：alipay / wxpay
+    default_channel: "alipay"
+
+  usdt:
+    enabled: true
+    # USDT 收款网络：TRC20 / ERC20
+    network: "TRC20"
+    # 收款钱包地址
+    wallet_address: "TXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    # CNY -> USDT 汇率（1 USDT = ? CNY）。0 表示从下方 rate_api 动态获取
+    cny_rate: 7.2
+    # 金额唯一性策略：在 USDT 金额尾部追加随机小数以区分订单（推荐 true）
+    unique_amount: true
+    # 内置 TRON 链上轮询（TRC20）。启用后无需外部监听服务，
+    # bot 进程定时查询 TronGrid，按金额匹配待支付订单并自动完成充值。
+    poll:
+      enabled: true
+      # TronGrid API 地址（默认 https://api.trongrid.io）
+      trongrid_url: "https://api.trongrid.io"
+      # TronGrid API Key（可选，注册 trongrid.io 获取，提升频率限制）
+      trongrid_api_key: ""
+      # USDT TRC20 合约地址（默认主网 USDT，留空使用默认）
+      contract_address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+      # 轮询间隔（秒），默认 30
+      interval_seconds: 30
+      # 回溯窗口（分钟），默认 = 订单超时 + 10
+      lookback_minutes: 40
+
+sub2api:
+  # sub2api 的 webhook 回调地址
+  webhook_url: "https://sub2api.yourdomain.com/api/v1/payment/webhook/tgshop"
+  # 与 sub2api 约定的 HMAC 共享密钥（用于回调签名）
+  webhook_secret: "your_shared_secret_change_me"
+  # 回调超时（秒）
+  timeout_seconds: 15
+  # 回调失败最大重试次数
+  max_retries: 5

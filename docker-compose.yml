@@ -1,0 +1,33 @@
+services:
+  telegram-shop:
+    build: .
+    container_name: telegram-shop
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # 挂载配置文件（生产环境请用 secrets 管理敏感信息）
+      - ./config.yaml:/app/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: telegram-shop-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: telegram_shop
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: change_me_in_production
+      TZ: Asia/Shanghai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
