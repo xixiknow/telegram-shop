@@ -2,13 +2,13 @@ package payment
 
 import (
 	"context"
-	"crypto/md5"
-	"crypto/subtle"
-	"encoding/hex"
-	"encoding/json"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -18,23 +18,46 @@ import (
 	"telegram-shop/internal/config"
 )
 
-// Dulupay 标准协议常量。
+// Dulupay V2（彩虹易支付 2.0）协议常量。
 const (
 	tradeStatusSuccess = "TRADE_SUCCESS"
 	easyPaySuccessResp = "success"
+	easyPaySignType    = "RSA"
+	// easyPaySignWindow 是回调/响应 timestamp 的有效窗口，与 SDK 的 300 秒一致。
+	easyPaySignWindow = 300 * time.Second
 )
 
-// EasyPay 实现 Dulupay 易支付（mapi.php 接口，MD5 签名）。
+// EasyPay 实现 Dulupay V2 易支付。
+//
+// 采用「页面跳转」模式（api/pay/submit）：下单时用商户私钥对参数做
+// SHA256WithRSA 签名，拼成带签名的支付 URL 返回给用户，无需服务端网络往返。
+// 支付结果由异步回调（GET query string）确认，用平台公钥验签。
 type EasyPay struct {
-	cfg       config.EasyPayConfig
-	notifyURL string
-	returnURL string
+	cfg        config.EasyPayConfig
+	notifyURL  string
+	returnURL  string
+	privateKey *rsa.PrivateKey
+	publicKey  *rsa.PublicKey
 }
 
-// NewEasyPay 创建 Dulupay provider。
-// notifyURL / returnURL 由上层根据 server.base_url 拼接传入。
+// NewEasyPay 创建 Dulupay V2 provider。
+// 解析失败（密钥格式错误）会 panic，应在启动装配阶段尽早暴露配置问题。
 func NewEasyPay(cfg config.EasyPayConfig, notifyURL, returnURL string) *EasyPay {
-	return &EasyPay{cfg: cfg, notifyURL: notifyURL, returnURL: returnURL}
+	priv, err := parseRSAPrivateKey(cfg.MerchantPrivateKey)
+	if err != nil {
+		panic(fmt.Sprintf("easypay: parse merchant private key: %v", err))
+	}
+	pub, err := parseRSAPublicKey(cfg.PlatformPublicKey)
+	if err != nil {
+		panic(fmt.Sprintf("easypay: parse platform public key: %v", err))
+	}
+	return &EasyPay{
+		cfg:        cfg,
+		notifyURL:  notifyURL,
+		returnURL:  returnURL,
+		privateKey: priv,
+		publicKey:  pub,
+	}
 }
 
 // Method 返回支付方式标识。
@@ -43,63 +66,36 @@ func (e *EasyPay) Method() string { return "easypay" }
 // SuccessResponse 返回 Dulupay 要求的成功应答。
 func (e *EasyPay) SuccessResponse() string { return easyPaySuccessResp }
 
-// Create 调用 Dulupay mapi.php 创建订单，返回支付链接。
-func (e *EasyPay) Create(ctx context.Context, orderNo string, amountCNY float64) (*CreateResult, error) {
+// Create 构造 Dulupay V2 页面跳转支付链接（api/pay/submit）。
+func (e *EasyPay) Create(_ context.Context, orderNo string, amountCNY float64) (*CreateResult, error) {
 	params := map[string]string{
 		"pid":          e.cfg.MerchantID,
-		"type":         e.cfg.DefaultChannel, // alipay / wxpay
+		"type":         e.cfg.DefaultChannel, // alipay / wxpay / qqpay / bank
 		"out_trade_no": orderNo,
 		"notify_url":   e.notifyURL,
 		"return_url":   e.returnURL,
 		"name":         fmt.Sprintf("余额充值 %.2f 元", amountCNY),
 		"money":        strconv.FormatFloat(amountCNY, 'f', 2, 64),
-		"clientip":     "127.0.0.1", // Dulupay 要求必传，telegram 场景无真实 IP
+		"timestamp":    strconv.FormatInt(time.Now().Unix(), 10),
 	}
-	params["sign"] = e.sign(params)
-	params["sign_type"] = "MD5"
-
-	apiURL := strings.TrimRight(e.cfg.GatewayURL, "/") + "/mapi.php"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, strings.NewReader(buildForm(params)))
+	sign, err := e.sign(params)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sign request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	params["sign"] = sign
+	params["sign_type"] = easyPaySignType
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request dulupay: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	var result struct {
-		Code   int    `json:"code"`
-		Msg    string `json:"msg"`
-		PayURL string `json:"payurl"`
-		QRCode string `json:"qrcode"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("parse dulupay response: %w", err)
-	}
-	if result.Code != 1 {
-		return nil, fmt.Errorf("dulupay error: %s", result.Msg)
-	}
-
-	payURL := result.PayURL
-	if payURL == "" {
-		payURL = result.QRCode // 部分场景只返回二维码
-	}
+	payURL := strings.TrimRight(e.cfg.GatewayURL, "/") + "/api/pay/submit?" + buildForm(params)
 
 	return &CreateResult{
 		PayURL:      payURL,
-		QRCode:      result.QRCode,
 		PayAmount:   amountCNY,
 		PayCurrency: "CNY",
 	}, nil
 }
 
-// VerifyNotification 解析并验签 Dulupay 异步回调（GET query string）。
+// VerifyNotification 解析并验签 Dulupay V2 异步回调（GET query string）。
+// 用平台公钥验 sign，并校验 timestamp 时间窗，防重放。
 func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, query map[string]string) (*Notification, error) {
 	params := query
 	if len(params) == 0 {
@@ -117,8 +113,20 @@ func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, query ma
 	if sign == "" {
 		return nil, fmt.Errorf("missing sign")
 	}
-	if !e.verifySign(params, sign) {
-		return nil, fmt.Errorf("invalid signature")
+
+	// timestamp 时间窗校验（与 SDK 的 abs(time-timestamp)>300 一致）。
+	if ts := strings.TrimSpace(params["timestamp"]); ts != "" {
+		tsInt, err := strconv.ParseInt(ts, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid timestamp")
+		}
+		if d := time.Since(time.Unix(tsInt, 0)); d > easyPaySignWindow || d < -easyPaySignWindow {
+			return nil, fmt.Errorf("timestamp out of window")
+		}
+	}
+
+	if err := e.verify(params, sign); err != nil {
+		return nil, fmt.Errorf("invalid signature: %w", err)
 	}
 
 	amount, _ := strconv.ParseFloat(params["money"], 64)
@@ -130,12 +138,12 @@ func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, query ma
 	}, nil
 }
 
-// sign 按 Dulupay 规则生成 MD5 签名：
-// 对非空、非 sign/sign_type 的参数按 key 升序拼接 k=v&...，末尾追加 KEY，取 MD5（小写）。
-func (e *EasyPay) sign(params map[string]string) string {
+// signContent 按 Dulupay V2 规则生成待签名字符串：
+// 对非空、非 sign/sign_type 的参数按 key 升序拼接 k=v，用 & 连接（末尾不追加密钥）。
+func signContent(params map[string]string) string {
 	keys := make([]string, 0, len(params))
 	for k, v := range params {
-		if k == "sign" || k == "sign_type" || v == "" {
+		if k == "sign" || k == "sign_type" || strings.TrimSpace(v) == "" {
 			continue
 		}
 		keys = append(keys, k)
@@ -151,15 +159,66 @@ func (e *EasyPay) sign(params map[string]string) string {
 		buf.WriteByte('=')
 		buf.WriteString(params[k])
 	}
-	buf.WriteString(e.cfg.MerchantKey)
-
-	hash := md5.Sum([]byte(buf.String()))
-	return hex.EncodeToString(hash[:])
+	return buf.String()
 }
 
-func (e *EasyPay) verifySign(params map[string]string, sign string) bool {
-	expected := e.sign(params)
-	return subtle.ConstantTimeCompare([]byte(expected), []byte(sign)) == 1
+// sign 用商户私钥对待签名字符串做 SHA256WithRSA 签名，返回 base64。
+func (e *EasyPay) sign(params map[string]string) (string, error) {
+	digest := sha256.Sum256([]byte(signContent(params)))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, e.privateKey, crypto.SHA256, digest[:])
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(sig), nil
+}
+
+// verify 用平台公钥验证签名。
+func (e *EasyPay) verify(params map[string]string, sign string) error {
+	sig, err := base64.StdEncoding.DecodeString(sign)
+	if err != nil {
+		return fmt.Errorf("decode sign: %w", err)
+	}
+	digest := sha256.Sum256([]byte(signContent(params)))
+	return rsa.VerifyPKCS1v15(e.publicKey, crypto.SHA256, digest[:], sig)
+}
+
+// parseRSAPrivateKey 解析裸 base64 的 PKCS#8 商户私钥（SDK 配置格式）。
+// 兼容 PKCS#1（BEGIN RSA PRIVATE KEY）作为回退。
+func parseRSAPrivateKey(b64 string) (*rsa.PrivateKey, error) {
+	der, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	if err != nil {
+		return nil, fmt.Errorf("base64 decode: %w", err)
+	}
+	if key, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		rsaKey, ok := key.(*rsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("not an RSA private key")
+		}
+		return rsaKey, nil
+	}
+	// 回退尝试 PKCS#1
+	rsaKey, err := x509.ParsePKCS1PrivateKey(der)
+	if err != nil {
+		return nil, fmt.Errorf("parse private key (tried PKCS#8 and PKCS#1): %w", err)
+	}
+	return rsaKey, nil
+}
+
+// parseRSAPublicKey 解析裸 base64 的 PKIX 平台公钥（SDK 配置格式）。
+func parseRSAPublicKey(b64 string) (*rsa.PublicKey, error) {
+	der, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	if err != nil {
+		return nil, fmt.Errorf("base64 decode: %w", err)
+	}
+	pub, err := x509.ParsePKIXPublicKey(der)
+	if err != nil {
+		return nil, fmt.Errorf("parse public key: %w", err)
+	}
+	rsaPub, ok := pub.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("not an RSA public key")
+	}
+	return rsaPub, nil
 }
 
 // buildForm 将 map 转为 application/x-www-form-urlencoded 格式（稳定排序便于调试）。

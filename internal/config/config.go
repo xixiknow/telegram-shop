@@ -43,13 +43,16 @@ type PaymentConfig struct {
 	USDT                USDTConfig    `mapstructure:"usdt"`
 }
 
-// EasyPayConfig 是易支付配置。
+// EasyPayConfig 是易支付配置（Dulupay V2，SHA256WithRSA 签名）。
 type EasyPayConfig struct {
-	Enabled        bool   `mapstructure:"enabled"`
-	GatewayURL     string `mapstructure:"gateway_url"`
-	MerchantID     string `mapstructure:"merchant_id"`
-	MerchantKey    string `mapstructure:"merchant_key"`
-	DefaultChannel string `mapstructure:"default_channel"`
+	Enabled    bool   `mapstructure:"enabled"`
+	GatewayURL string `mapstructure:"gateway_url"` // 接口地址，如 https://api.dulupay.com/（带末尾斜杠或不带均可）
+	MerchantID string `mapstructure:"merchant_id"` // 商户 ID（pid）
+	// PlatformPublicKey 平台公钥（裸 base64，无 PEM 头），用于验签回调与 API 响应。
+	PlatformPublicKey string `mapstructure:"platform_public_key"`
+	// MerchantPrivateKey 商户私钥（裸 base64，PKCS#8，无 PEM 头），用于请求签名。
+	MerchantPrivateKey string `mapstructure:"merchant_private_key"`
+	DefaultChannel     string `mapstructure:"default_channel"` // alipay / wxpay / qqpay / bank
 }
 
 // USDTConfig 是 USDT 支付配置。

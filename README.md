@@ -5,7 +5,7 @@
 ## 特性
 
 - 🤖 **纯菜单交互** — 常驻底部菜单 + Inline 键盘，额度/支付方式一键选择
-- 💳 **易支付** — Dulupay 易支付协议（支付宝/微信），mapi.php 接口 + MD5 签名
+- 💳 **易支付** — Dulupay V2 协议（支付宝/微信），页面跳转（api/pay/submit）+ SHA256WithRSA 签名
 - ₮ **USDT** — 自托管 TRC20 收款，**内置 TronGrid 链上轮询** + 唯一金额匹配，无需外部监听服务
 - 🔗 **sub2api 集成** — HMAC 签名的 webhook 回调，幂等充值
 - 🔁 **可靠性** — 订单状态机 + 自动过期 + 回调重试（指数退避）
@@ -86,9 +86,10 @@ payment:
   easypay:
     enabled: true
     gateway_url: "https://api.dulupay.com"   # Dulupay 网关
-    merchant_id: "商户ID"
-    merchant_key: "商户密钥"
-    default_channel: "alipay"                 # alipay / wxpay
+    merchant_id: "商户ID(PID)"
+    platform_public_key: "平台公钥(裸base64)"   # Dulupay 后台「API信息」
+    merchant_private_key: "商户私钥(裸base64)"  # Dulupay 后台「API信息」生成的RSA密钥对
+    default_channel: "alipay"                 # alipay / wxpay / qqpay / bank
   usdt:
     enabled: true
     wallet_address: "你的USDT-TRC20收款地址"
@@ -154,7 +155,7 @@ pending ──支付成功──▶ paid ──sub2api充值成功──▶ comp
 
 ## 安全说明
 
-- 易支付回调按彩虹易支付标准 MD5 验签
+- 易支付回调按 Dulupay V2（SHA256WithRSA）平台公钥验签 + timestamp 时间窗防重放
 - USDT / sub2api 回调使用 HMAC-SHA256 + 时间戳防重放
 - ⚠️ 网络暴露的 webhook 端点务必置于 HTTPS 之后
 - ⚠️ `config.yaml` 含密钥，生产环境请用 secrets 管理，勿提交仓库

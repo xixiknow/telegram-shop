@@ -39,13 +39,15 @@ payment:
 
   easypay:
     enabled: true
-    # Dulupay 易支付网关地址（默认 https://api.dulupay.com，调用 /mapi.php）
+    # Dulupay V2 易支付网关地址（默认 https://api.dulupay.com，调用 api/pay/submit）
     gateway_url: "https://api.dulupay.com"
     # 商户 ID（Dulupay 后台「个人资料 -> API 信息」中的 PID）
     merchant_id: "10001"
-    # 商户密钥（Dulupay 后台的 KEY，V2 MD5 签名使用）
-    merchant_key: "your_dulupay_merchant_key"
-    # 默认支付通道：alipay / wxpay
+    # 平台公钥（Dulupay 后台「个人资料 -> API 信息」的平台公钥，裸 base64，用于回调验签）
+    platform_public_key: "your_dulupay_platform_public_key_base64"
+    # 商户私钥（Dulupay 后台「生成商户RSA密钥对」得到的商户私钥，裸 base64，用于请求签名）
+    merchant_private_key: "your_dulupay_merchant_private_key_base64"
+    # 默认支付通道：alipay / wxpay / qqpay / bank
     default_channel: "alipay"
 
   usdt:
