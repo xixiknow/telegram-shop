@@ -3,8 +3,10 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/rand"
 	"time"
 
@@ -45,6 +47,11 @@ type CreateOrderInput struct {
 	PaymentMethod    string
 }
 
+// ErrActivePendingOrder 表示用户已有一笔待支付且未过期的订单，
+// 受「每用户同时仅允许一笔未付款订单」限制，不再创建新单。
+// 返回此错误时，第一个返回值为已存在的那笔订单。
+var ErrActivePendingOrder = errors.New("active pending order exists")
+
 // CreateOrder 创建订单并发起支付。
 func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (*model.TGOrder, *payment.CreateResult, error) {
 	provider, ok := s.providers[in.PaymentMethod]
@@ -58,8 +65,17 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (*m
 		return nil, nil, fmt.Errorf("sub2api email not bound")
 	}
 
-	orderNo := generateOrderNo()
 	now := time.Now()
+
+	// 限制：每个用户同时只能有一笔待支付且未过期的订单（已过期/已终态不计）。
+	// 在向支付方下单之前检查，避免产生无谓的第三方订单。
+	if existing, err := s.store.FindActivePendingOrder(in.TelegramUserID, now); err == nil {
+		return existing, nil, ErrActivePendingOrder
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, nil, fmt.Errorf("check active pending order: %w", err)
+	}
+
+	orderNo := generateOrderNo()
 	expiresAt := now.Add(time.Duration(s.cfg.Payment.OrderTimeoutMinutes) * time.Minute)
 
 	result, err := provider.Create(ctx, orderNo, in.AmountCNY)
@@ -67,11 +83,15 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (*m
 		return nil, nil, fmt.Errorf("create payment: %w", err)
 	}
 
+	// 活动赠送：以下单时刻为准锁定赠额（活动结束后付款不影响已下单订单）。
+	giftAmount := s.cfg.GiftAmountAt(in.AmountCNY, now)
+
 	order := &model.TGOrder{
 		OrderNo:               orderNo,
 		TelegramUserID:        in.TelegramUserID,
 		TelegramUsername:      in.TelegramUsername,
 		Amount:                in.AmountCNY,
+		GiftAmount:            giftAmount,
 		PayAmount:             result.PayAmount,
 		PayCurrency:           result.PayCurrency,
 		PaymentMethod:         in.PaymentMethod,
@@ -127,8 +147,8 @@ func (s *OrderService) HandlePaymentSuccess(ctx context.Context, orderNo, tradeN
 	if order.Sub2APICallbackStatus != model.CallbackStatusSuccess {
 		if err := s.fulfill(ctx, order); err != nil {
 			_ = s.store.UpdateOrderFields(orderNo, map[string]any{
-				"sub2api_callback_status": model.CallbackStatusFailed,
-				"sub2api_callback_error":  err.Error(),
+				"sub2_api_callback_status": model.CallbackStatusFailed,
+				"sub2_api_callback_error":  err.Error(),
 			})
 			return order, fmt.Errorf("fulfill via sub2api: %w", err)
 		}
@@ -136,10 +156,10 @@ func (s *OrderService) HandlePaymentSuccess(ctx context.Context, orderNo, tradeN
 
 	completedAt := time.Now()
 	_ = s.store.UpdateOrderFields(orderNo, map[string]any{
-		"status":                  model.OrderStatusCompleted,
-		"sub2api_callback_status": model.CallbackStatusSuccess,
-		"sub2api_callback_error":  "",
-		"completed_at":            completedAt,
+		"status":                   model.OrderStatusCompleted,
+		"sub2_api_callback_status": model.CallbackStatusSuccess,
+		"sub2_api_callback_error":  "",
+		"completed_at":             completedAt,
 	})
 	order.Status = model.OrderStatusCompleted
 	order.Sub2APICallbackStatus = model.CallbackStatusSuccess
@@ -150,12 +170,15 @@ func (s *OrderService) HandlePaymentSuccess(ctx context.Context, orderNo, tradeN
 }
 
 func (s *OrderService) fulfill(ctx context.Context, order *model.TGOrder) error {
+	// 落账金额 = 充值额度 + 活动赠额（合入余额一起充）。
+	// 返利基数 = 充值额度（不含赠额），与标准支付路径口径一致。
 	return s.sub2api.Recharge(ctx, sub2api.RechargeRequest{
-		OrderNo: order.OrderNo,
-		TradeNo: order.PaymentTradeNo,
-		Email:   order.Sub2APIEmail,
-		Amount:  order.Amount,
-		Status:  "success",
+		OrderNo:    order.OrderNo,
+		TradeNo:    order.PaymentTradeNo,
+		Email:      order.Sub2APIEmail,
+		Amount:     order.Amount + order.GiftAmount,
+		BaseAmount: order.Amount,
+		Status:     "success",
 	})
 }
 
@@ -165,26 +188,20 @@ func (s *OrderService) Provider(method string) (payment.Provider, bool) {
 	return p, ok
 }
 
-// Store 暴露底层 store（供 webhook handler 做 USDT 金额匹配等）。
-func (s *OrderService) Store() *store.Store { return s.store }
-
-// MatchAndFulfillUSDT 实现 payment.OrderMatcher：按链上到账金额匹配一笔待支付
-// USDT 订单并完成充值。返回匹配到的订单号；无匹配时返回空字符串、nil error
-// （视为无关转账，由调用方标记 seen 不再重试）。
-func (s *OrderService) MatchAndFulfillUSDT(ctx context.Context, transfer payment.USDTTransfer) (string, error) {
-	// 金额按 ±0.005 USDT 容差区间匹配，吸收浮点/精度差异。
-	const tolerance = 0.005
-	order, err := s.store.FindPendingOrderByUSDTAmountRange(transfer.Amount-tolerance, transfer.Amount+tolerance)
-	if err != nil {
-		// 无匹配订单：视为无关转账，返回空订单号、nil error。
-		return "", nil
+// USDTProvider 返回任一已注册的 USDT（BEpusdt）provider，用于回调验签。
+// 两条链的 provider 共享同一 API Token，验签逻辑一致，取任一即可。
+func (s *OrderService) USDTProvider() (payment.Provider, bool) {
+	if p, ok := s.providers[payment.MethodUSDTTRC20]; ok {
+		return p, true
 	}
-
-	if _, err := s.HandlePaymentSuccess(ctx, order.OrderNo, transfer.TxID, transfer.Amount); err != nil {
-		return "", err
+	if p, ok := s.providers[payment.MethodUSDTBEP20]; ok {
+		return p, true
 	}
-	return order.OrderNo, nil
+	return nil, false
 }
+
+// Store 暴露底层 store（供 webhook handler 等使用）。
+func (s *OrderService) Store() *store.Store { return s.store }
 
 // ExpireOrders 将过期未支付订单标记为 expired。
 func (s *OrderService) ExpireOrders(ctx context.Context) {
@@ -198,13 +215,45 @@ func (s *OrderService) ExpireOrders(ctx context.Context) {
 	}
 }
 
+// RetryStuckOrders 扫描卡在 paid 状态（支付成功但充值未完成）的订单并重试充值，
+// 返回本轮补单成功（变为 completed）的 orderNo 列表，供上层通知用户。
+// 兜底场景：支付方回调重试窗口耗尽后，订单仍可由本任务自动补单。
+func (s *OrderService) RetryStuckOrders(ctx context.Context) []string {
+	orders, err := s.store.ListStuckPaidOrders(100)
+	if err != nil {
+		slog.Error("retry stuck orders: list failed", "error", err)
+		return nil
+	}
+	var succeeded []string
+	for i := range orders {
+		o := orders[i]
+		updated, err := s.HandlePaymentSuccess(ctx, o.OrderNo, o.PaymentTradeNo, o.Amount)
+		if err != nil {
+			slog.Warn("retry stuck order still failing", "orderNo", o.OrderNo, "error", err)
+			continue
+		}
+		if updated.Status == model.OrderStatusCompleted {
+			slog.Info("stuck order auto-recovered", "orderNo", o.OrderNo)
+			succeeded = append(succeeded, o.OrderNo)
+		}
+	}
+	return succeeded
+}
+
+// isAllowedAmount 校验金额是否可下单：命中配置档位，或落在自定义金额区间 [MinAmount, MaxAmount] 内。
+// 自定义金额按两位小数（分）粒度校验，避免浮点误差。
 func (s *OrderService) isAllowedAmount(amount float64) bool {
 	for _, a := range s.cfg.Amounts {
 		if a == amount {
 			return true
 		}
 	}
-	return false
+	// 自定义金额：范围校验 + 必须是合法的两位小数（不接受 0.001 这种）。
+	if amount < s.cfg.MinAmount || amount > s.cfg.MaxAmount {
+		return false
+	}
+	cents := math.Round(amount * 100)
+	return math.Abs(amount*100-cents) < 1e-6 && cents > 0
 }
 
 // generateOrderNo 生成订单号：tgshop_20240614 + 8位随机。

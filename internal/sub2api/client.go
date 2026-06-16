@@ -50,8 +50,12 @@ type RechargeRequest struct {
 	OrderNo string  `json:"order_no"`
 	TradeNo string  `json:"trade_no"`
 	Email   string  `json:"email"`
-	Amount  float64 `json:"amount"`
-	Status  string  `json:"status"`
+	// Amount 为落账总额（充值额度 + 活动赠额），即实际计入用户余额的金额。
+	Amount float64 `json:"amount"`
+	// BaseAmount 为实付充值额度（不含活动赠额），作为邀请返利的计提基数，
+	// 与 sub2api 标准支付路径口径一致（赠送金额不产生返利）。
+	BaseAmount float64 `json:"base_amount"`
+	Status     string  `json:"status"`
 }
 
 // New 创建 sub2api 客户端。
