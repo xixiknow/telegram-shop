@@ -40,6 +40,7 @@ import (
 // Client 是 sub2api 充值回调客户端。
 type Client struct {
 	webhookURL string
+	balanceURL string
 	secret     string
 	maxRetries int
 	httpClient *http.Client
@@ -47,9 +48,9 @@ type Client struct {
 
 // RechargeRequest 是发往 sub2api 的充值请求体。
 type RechargeRequest struct {
-	OrderNo string  `json:"order_no"`
-	TradeNo string  `json:"trade_no"`
-	Email   string  `json:"email"`
+	OrderNo string `json:"order_no"`
+	TradeNo string `json:"trade_no"`
+	Email   string `json:"email"`
 	// Amount 为落账总额（充值额度 + 活动赠额），即实际计入用户余额的金额。
 	Amount float64 `json:"amount"`
 	// BaseAmount 为实付充值额度（不含活动赠额），作为邀请返利的计提基数，
@@ -58,10 +59,11 @@ type RechargeRequest struct {
 	Status     string  `json:"status"`
 }
 
-// New 创建 sub2api 客户端。
-func New(webhookURL, secret string, timeoutSeconds, maxRetries int) *Client {
+// New 创建 sub2api 客户端。balanceURL 为只读余额查询端点（可为空则禁用查询）。
+func New(webhookURL, balanceURL, secret string, timeoutSeconds, maxRetries int) *Client {
 	return &Client{
 		webhookURL: webhookURL,
+		balanceURL: balanceURL,
 		secret:     secret,
 		maxRetries: maxRetries,
 		httpClient: &http.Client{Timeout: time.Duration(timeoutSeconds) * time.Second},
@@ -90,7 +92,7 @@ func (c *Client) Recharge(ctx context.Context, req RechargeRequest) error {
 			}
 		}
 
-		err := c.doRequest(ctx, body)
+		_, err := c.doSignedPost(ctx, c.webhookURL, body)
 		if err == nil {
 			return nil
 		}
@@ -99,17 +101,45 @@ func (c *Client) Recharge(ctx context.Context, req RechargeRequest) error {
 	return fmt.Errorf("recharge failed after %d retries: %w", c.maxRetries, lastErr)
 }
 
-func (c *Client) doRequest(ctx context.Context, body []byte) error {
+// BalanceResult 是 sub2api 余额查询的返回。
+type BalanceResult struct {
+	Balance       float64 `json:"balance"`
+	FrozenBalance float64 `json:"frozen_balance"`
+}
+
+// QueryBalance 向 sub2api 查询指定 email 用户的余额。只读、单次（不重试），
+// 供 Bot 交互式调用，失败即返回，避免用户久等。
+func (c *Client) QueryBalance(ctx context.Context, email string) (*BalanceResult, error) {
+	if c.balanceURL == "" {
+		return nil, fmt.Errorf("balance query not configured")
+	}
+	body, err := json.Marshal(map[string]string{"email": email})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	respBody, err := c.doSignedPost(ctx, c.balanceURL, body)
+	if err != nil {
+		return nil, err
+	}
+	var result BalanceResult
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+	return &result, nil
+}
+
+// doSignedPost 向 url 发起带 HMAC 签名的 POST，返回响应体（成功时）。
+func (c *Client) doSignedPost(ctx context.Context, url string, body []byte) ([]byte, error) {
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	nonce, err := randomNonce(16)
 	if err != nil {
-		return fmt.Errorf("generate nonce: %w", err)
+		return nil, fmt.Errorf("generate nonce: %w", err)
 	}
 	signature := c.sign(timestamp, nonce, body)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.webhookURL, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return nil, fmt.Errorf("build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("X-TGShop-Timestamp", timestamp)
@@ -118,15 +148,15 @@ func (c *Client) doRequest(ctx context.Context, body []byte) error {
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("do request: %w", err)
+		return nil, fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("sub2api returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return nil, fmt.Errorf("sub2api returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
-	return nil
+	return respBody, nil
 }
 
 // sign 生成 HMAC-SHA256 签名：hex(HMAC(secret, timestamp + "." + nonce + "." + body))。

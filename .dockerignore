@@ -6,3 +6,5 @@ docs/
 .vscode
 telegram-shop
 *.exe
+config.local.yaml
+.env

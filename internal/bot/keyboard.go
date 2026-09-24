@@ -3,42 +3,73 @@ package bot
 
 import (
 	"fmt"
+	"time"
+
+	"telegram-shop/internal/i18n"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 // callback data 前缀（用于 inline keyboard 回调路由）。
 const (
-	cbAmountPrefix  = "amount:"  // amount:50 —— 选择充值额度
-	cbMethodPrefix  = "method:"  // method:easypay:50 —— 选择支付方式
-	cbShop          = "shop"     // 返回额度选择
-	cbOrders        = "orders"   // 我的订单
-	cbCheckPrefix   = "check:"   // check:tgshop_xxx —— 主动查询订单
+	cbAmountPrefix = "amount:" // amount:50 —— 选择充值额度
+	cbMethodPrefix = "method:" // method:easypay:50 —— 选择支付方式
+	cbNetPrefix    = "net:"    // net:50 —— 选择 USDT 链（展开 TRC20/BEP20）
+	cbShop         = "shop"    // 返回额度选择
+	cbOrders       = "orders"  // 我的订单
+	cbCheckPrefix  = "check:"  // check:tgshop_xxx —— 主动查询订单
+	cbLang         = "lang"    // 展开语言选择
+	cbLangPrefix   = "lang:"   // lang:en —— 设置语言
+	cbCustomAmount = "custom"  // 自定义金额 —— 进入等待输入状态
 )
 
 // mainMenuKeyboard 返回主菜单（reply keyboard，常驻底部）。
-func mainMenuKeyboard() tgbotapi.ReplyKeyboardMarkup {
+func mainMenuKeyboard(lang i18n.Lang) tgbotapi.ReplyKeyboardMarkup {
 	kb := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("🛒 充值"),
-			tgbotapi.NewKeyboardButton("📋 我的订单"),
+			tgbotapi.NewKeyboardButton(i18n.T(lang, i18n.BtnShop)),
+			tgbotapi.NewKeyboardButton(i18n.T(lang, i18n.BtnOrders)),
 		),
 		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("👤 我的账号"),
-			tgbotapi.NewKeyboardButton("❓ 帮助"),
+			tgbotapi.NewKeyboardButton(i18n.T(lang, i18n.BtnBalance)),
+			tgbotapi.NewKeyboardButton(i18n.T(lang, i18n.BtnAccount)),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton(i18n.T(lang, i18n.BtnHelp)),
+			tgbotapi.NewKeyboardButton(i18n.T(lang, i18n.BtnLanguage)),
 		),
 	)
 	kb.ResizeKeyboard = true
 	return kb
 }
 
+// languageKeyboard 返回语言选择 inline 键盘。
+func languageKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				i18n.T(i18n.ZH, i18n.BtnLangZH), cbLangPrefix+string(i18n.ZH),
+			),
+			tgbotapi.NewInlineKeyboardButtonData(
+				i18n.T(i18n.EN, i18n.BtnLangEN), cbLangPrefix+string(i18n.EN),
+			),
+		),
+	)
+}
+
 // amountKeyboard 根据配置的额度生成 inline 键盘，每行 2 个按钮。
-func amountKeyboard(amounts []float64) tgbotapi.InlineKeyboardMarkup {
+// giftFn 用于计算各档位的活动赠额（为 0 则按钮不显示赠送）。
+func amountKeyboard(lang i18n.Lang, amounts []float64, giftFn func(float64, time.Time) float64, now time.Time) tgbotapi.InlineKeyboardMarkup {
 	var rows [][]tgbotapi.InlineKeyboardButton
 	var row []tgbotapi.InlineKeyboardButton
 
 	for i, amount := range amounts {
-		label := fmt.Sprintf("💰 %g 元", amount)
+		label := fmt.Sprintf(i18n.T(lang, i18n.LabelAmountUnit), amount)
+		if giftFn != nil {
+			if g := giftFn(amount, now); g > 0 {
+				label = fmt.Sprintf(i18n.T(lang, i18n.LabelAmountGift), amount, g)
+			}
+		}
 		data := fmt.Sprintf("%s%g", cbAmountPrefix, amount)
 		row = append(row, tgbotapi.NewInlineKeyboardButtonData(label, data))
 
@@ -47,45 +78,76 @@ func amountKeyboard(amounts []float64) tgbotapi.InlineKeyboardMarkup {
 			row = nil
 		}
 	}
+	// 自定义金额按钮，独占一行。
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(i18n.T(lang, i18n.BtnCustomAmount), cbCustomAmount),
+	))
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
 // methodKeyboard 返回支付方式选择键盘。
-func methodKeyboard(amount float64, easypayEnabled, usdtEnabled bool) tgbotapi.InlineKeyboardMarkup {
+func methodKeyboard(lang i18n.Lang, amount float64, easypayEnabled, usdtEnabled bool) tgbotapi.InlineKeyboardMarkup {
 	var rows [][]tgbotapi.InlineKeyboardButton
 
 	if easypayEnabled {
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(
-				"💳 易支付（支付宝/微信）",
+				i18n.T(lang, i18n.BtnEasyPay),
 				fmt.Sprintf("%seasypay:%g", cbMethodPrefix, amount),
 			),
 		))
 	}
 	if usdtEnabled {
+		// USDT 先选链：进入网络选择子菜单。
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(
-				"₮ USDT 支付",
-				fmt.Sprintf("%susdt:%g", cbMethodPrefix, amount),
+				i18n.T(lang, i18n.BtnUSDT),
+				fmt.Sprintf("%s%g", cbNetPrefix, amount),
 			),
 		))
 	}
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("⬅️ 返回", cbShop),
+		tgbotapi.NewInlineKeyboardButtonData(i18n.T(lang, i18n.BtnBack), cbShop),
+	))
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
+}
+
+// networkKeyboard 返回 USDT 链选择键盘（按配置启用项显示）。
+func networkKeyboard(lang i18n.Lang, amount float64, trc20Enabled, bep20Enabled bool) tgbotapi.InlineKeyboardMarkup {
+	var rows [][]tgbotapi.InlineKeyboardButton
+
+	if trc20Enabled {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				i18n.T(lang, i18n.BtnTRC20),
+				fmt.Sprintf("%susdt_trc20:%g", cbMethodPrefix, amount),
+			),
+		))
+	}
+	if bep20Enabled {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				i18n.T(lang, i18n.BtnBEP20),
+				fmt.Sprintf("%susdt_bep20:%g", cbMethodPrefix, amount),
+			),
+		))
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData(i18n.T(lang, i18n.BtnBack), fmt.Sprintf("%s%g", cbAmountPrefix, amount)),
 	))
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
 // orderActionKeyboard 返回订单操作键盘（含支付链接与刷新）。
-func orderActionKeyboard(orderNo, payURL string) tgbotapi.InlineKeyboardMarkup {
+func orderActionKeyboard(lang i18n.Lang, orderNo, payURL string) tgbotapi.InlineKeyboardMarkup {
 	var rows [][]tgbotapi.InlineKeyboardButton
 	if payURL != "" {
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonURL("🔗 去支付", payURL),
+			tgbotapi.NewInlineKeyboardButtonURL(i18n.T(lang, i18n.BtnPay), payURL),
 		))
 	}
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("🔄 我已支付/刷新状态", cbCheckPrefix+orderNo),
+		tgbotapi.NewInlineKeyboardButtonData(i18n.T(lang, i18n.BtnRefresh), cbCheckPrefix+orderNo),
 	))
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }

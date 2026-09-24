@@ -8,7 +8,10 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -29,15 +32,16 @@ const (
 
 // EasyPay 实现 Dulupay V2 易支付。
 //
-// 采用「页面跳转」模式（api/pay/submit）：下单时用商户私钥对参数做
-// SHA256WithRSA 签名，拼成带签名的支付 URL 返回给用户，无需服务端网络往返。
-// 支付结果由异步回调（GET query string）确认，用平台公钥验签。
+// 采用「API 下单」模式（api/pay/create）：下单时用商户私钥对参数做
+// SHA256WithRSA 签名，POST 到网关，返回 JSON 含支付二维码内容（pay_info），
+// 由 telegram-shop 在 Telegram 内渲染二维码。支付结果由异步回调确认，用平台公钥验签。
 type EasyPay struct {
 	cfg        config.EasyPayConfig
 	notifyURL  string
 	returnURL  string
 	privateKey *rsa.PrivateKey
 	publicKey  *rsa.PublicKey
+	httpClient *http.Client
 }
 
 // NewEasyPay 创建 Dulupay V2 provider。
@@ -57,6 +61,7 @@ func NewEasyPay(cfg config.EasyPayConfig, notifyURL, returnURL string) *EasyPay 
 		returnURL:  returnURL,
 		privateKey: priv,
 		publicKey:  pub,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -66,8 +71,20 @@ func (e *EasyPay) Method() string { return "easypay" }
 // SuccessResponse 返回 Dulupay 要求的成功应答。
 func (e *EasyPay) SuccessResponse() string { return easyPaySuccessResp }
 
-// Create 构造 Dulupay V2 页面跳转支付链接（api/pay/submit）。
-func (e *EasyPay) Create(_ context.Context, orderNo string, amountCNY float64) (*CreateResult, error) {
+// easyPayCreateResp 是 api/pay/create 的响应结构。
+type easyPayCreateResp struct {
+	Code      int    `json:"code"`
+	Msg       string `json:"msg"`
+	TradeNo   string `json:"trade_no"`
+	PayType   string `json:"pay_type"` // qrcode / jump / html ...
+	PayInfo   string `json:"pay_info"` // qrcode: 二维码内容URL；jump: 跳转URL
+	Timestamp string `json:"timestamp"`
+	SignType  string `json:"sign_type"`
+	Sign      string `json:"sign"`
+}
+
+// Create 通过 Dulupay V2 API 下单（api/pay/create），返回支付二维码内容。
+func (e *EasyPay) Create(ctx context.Context, orderNo string, amountCNY float64) (*CreateResult, error) {
 	params := map[string]string{
 		"pid":          e.cfg.MerchantID,
 		"type":         e.cfg.DefaultChannel, // alipay / wxpay / qqpay / bank
@@ -76,6 +93,8 @@ func (e *EasyPay) Create(_ context.Context, orderNo string, amountCNY float64) (
 		"return_url":   e.returnURL,
 		"name":         fmt.Sprintf("余额充值 %.2f 元", amountCNY),
 		"money":        strconv.FormatFloat(amountCNY, 'f', 2, 64),
+		"clientip":     "127.0.0.1",
+		"device":       "pc",
 		"timestamp":    strconv.FormatInt(time.Now().Unix(), 10),
 	}
 	sign, err := e.sign(params)
@@ -85,13 +104,54 @@ func (e *EasyPay) Create(_ context.Context, orderNo string, amountCNY float64) (
 	params["sign"] = sign
 	params["sign_type"] = easyPaySignType
 
-	payURL := strings.TrimRight(e.cfg.GatewayURL, "/") + "/api/pay/submit?" + buildForm(params)
+	form := url.Values{}
+	for k, v := range params {
+		form.Set(k, v)
+	}
 
-	return &CreateResult{
-		PayURL:      payURL,
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(e.cfg.GatewayURL, "/")+"/api/pay/create",
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request dulupay: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var parsed easyPayCreateResp
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("parse dulupay response: %w (body=%s)", err, strings.TrimSpace(string(body)))
+	}
+	if parsed.Code != 0 {
+		return nil, fmt.Errorf("dulupay error: %s", parsed.Msg)
+	}
+	if parsed.PayInfo == "" {
+		return nil, fmt.Errorf("dulupay response missing pay_info (pay_type=%s)", parsed.PayType)
+	}
+
+	res := &CreateResult{
 		PayAmount:   amountCNY,
 		PayCurrency: "CNY",
-	}, nil
+		Extra: map[string]string{
+			"pay_type": parsed.PayType,
+			"channel":  e.cfg.DefaultChannel,
+			"trade_no": parsed.TradeNo,
+		},
+	}
+	// qrcode：pay_info 为二维码内容（如支付宝收款码 URL），在 Telegram 内渲染二维码。
+	// jump/其它：pay_info 为跳转 URL，作为"去支付"按钮。
+	if parsed.PayType == "jump" {
+		res.PayURL = parsed.PayInfo
+	} else {
+		res.QRCode = parsed.PayInfo
+	}
+	return res, nil
 }
 
 // VerifyNotification 解析并验签 Dulupay V2 异步回调（GET query string）。

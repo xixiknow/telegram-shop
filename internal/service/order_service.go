@@ -38,6 +38,12 @@ func NewOrderService(
 	return &OrderService{cfg: cfg, store: st, providers: providers, sub2api: s2a}
 }
 
+// QueryBalance 透传到 sub2api 客户端，查询指定 email 用户的余额。
+// 供 Bot 交互式调用；bot 只依赖 OrderService，故经此薄封装转调。
+func (s *OrderService) QueryBalance(ctx context.Context, email string) (*sub2api.BalanceResult, error) {
+	return s.sub2api.QueryBalance(ctx, email)
+}
+
 // CreateOrderInput 是创建订单的入参。
 type CreateOrderInput struct {
 	TelegramUserID   int64

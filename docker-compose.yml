@@ -4,13 +4,16 @@ services:
     container_name: telegram-shop
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # 仅绑本机，由宿主 nginx 经 /tgshop/ 反代（避开已占用的 8080/8090-8092）
+      - "127.0.0.1:8081:8080"
     volumes:
       # 挂载配置文件（生产环境请用 secrets 管理敏感信息）
-      - ./config.yaml:/app/config.yaml:ro
+      - ./config.local.yaml:/app/config.yaml:ro
     depends_on:
       postgres:
         condition: service_healthy
+      bepusdt:
+        condition: service_started
 
   postgres:
     image: postgres:15-alpine
@@ -19,7 +22,7 @@ services:
     environment:
       POSTGRES_DB: telegram_shop
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: change_me_in_production
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       TZ: Asia/Shanghai
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -29,5 +32,20 @@ services:
       timeout: 5s
       retries: 5
 
+  # BEpusdt USDT 收款网关。telegram-shop 通过内网 http://bepusdt:8080 调用其 API。
+  # 首次启动后访问 http://127.0.0.1:8095 进入后台，配置收款地址/RPC，并在
+  # 「系统管理 → 基础设置 → API 设置」获取 Integration Token，填入 config.local.yaml 的 usdt.api_token。
+  bepusdt:
+    image: v03413/bepusdt:latest
+    container_name: bepusdt
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8095:8080"   # 后台/收银台端口（仅本机；8090 已被独角数卡占用）
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - bepusdt_data:/app/data
+
 volumes:
   pgdata:
+  bepusdt_data:

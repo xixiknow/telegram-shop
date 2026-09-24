@@ -46,6 +46,7 @@ func main() {
 	// sub2api 充值回调客户端
 	s2a := sub2api.New(
 		cfg.Sub2API.WebhookURL,
+		cfg.Sub2API.BalanceURL,
 		cfg.Sub2API.WebhookSecret,
 		cfg.Sub2API.TimeoutSeconds,
 		cfg.Sub2API.MaxRetries,
@@ -69,12 +70,8 @@ func main() {
 	// 启动订单过期清理
 	go runExpiryLoop(ctx, orderService)
 
-	// 启动 USDT 内置 TRON 链上轮询（启用时）
-	if cfg.Payment.USDT.Enabled && cfg.Payment.USDT.Poll.Enabled {
-		poller := payment.NewUSDTPoller(cfg.Payment.USDT.Poll, cfg.Payment.USDT.WalletAddress, orderService)
-		go poller.Run(ctx)
-		slog.Info("usdt tron poller enabled")
-	}
+	// 启动卡单自动补单（兜底支付方回调重试超时的情况）
+	go runRetryLoop(ctx, orderService, tgBot.NotifyOrderCompleted)
 
 	// 启动 HTTP 服务
 	go func() {
@@ -111,8 +108,17 @@ func buildProviders(cfg *config.Config) map[string]payment.Provider {
 		slog.Info("easypay provider enabled")
 	}
 	if cfg.Payment.USDT.Enabled {
-		providers[payment.MethodUSDT] = payment.NewUSDT(cfg.Payment.USDT)
-		slog.Info("usdt provider enabled")
+		notifyURL := cfg.Server.BaseURL + "/api/webhook/usdt"
+		if cfg.Payment.USDT.TRC20Enabled {
+			providers[payment.MethodUSDTTRC20] = payment.NewBEpusdt(
+				payment.MethodUSDTTRC20, "usdt.trc20", "TRC20", cfg.Payment.USDT, notifyURL)
+			slog.Info("usdt provider enabled", "network", "TRC20")
+		}
+		if cfg.Payment.USDT.BEP20Enabled {
+			providers[payment.MethodUSDTBEP20] = payment.NewBEpusdt(
+				payment.MethodUSDTBEP20, "usdt.bep20", "BEP20", cfg.Payment.USDT, notifyURL)
+			slog.Info("usdt provider enabled", "network", "BEP20")
+		}
 	}
 	return providers
 }
@@ -126,6 +132,24 @@ func runExpiryLoop(ctx context.Context, orderService *service.OrderService) {
 			return
 		case <-ticker.C:
 			orderService.ExpireOrders(ctx)
+		}
+	}
+}
+
+// runRetryLoop 定时扫描卡在 paid 的订单并自动补单（重试充值）。
+// 补单成功后通过 notify 主动通知 Telegram 用户到账，无需用户手动刷新。
+// 单次内的退避由 sub2api.Recharge 的指数退避负责，此处仅控制扫描频率。
+func runRetryLoop(ctx context.Context, orderService *service.OrderService, notify func(orderNo string)) {
+	ticker := time.NewTicker(3 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, orderNo := range orderService.RetryStuckOrders(ctx) {
+				go notify(orderNo)
+			}
 		}
 	}
 }

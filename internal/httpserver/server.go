@@ -2,15 +2,9 @@
 package httpserver
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"time"
 
 	"telegram-shop/internal/config"
 	"telegram-shop/internal/service"
@@ -58,7 +52,7 @@ func (s *Server) registerRoutes() {
 		// 易支付通常以 GET 回调（query string）
 		webhook.GET("/easypay", s.handleEasyPay)
 		webhook.POST("/easypay", s.handleEasyPay)
-		// USDT 链上监听服务回调（内部 HMAC 签名）
+		// USDT（BEpusdt 网关）异步回调（POST JSON，MD5+Token 验签）
 		webhook.POST("/usdt", s.handleUSDT)
 	}
 }
@@ -106,79 +100,39 @@ func (s *Server) handleEasyPay(c *gin.Context) {
 	c.String(http.StatusOK, provider.SuccessResponse())
 }
 
-// usdtNotifyPayload 是 USDT 链上监听服务推送的到账通知。
-type usdtNotifyPayload struct {
-	TxHash    string  `json:"tx_hash"`
-	Amount    float64 `json:"amount"`     // 到账 USDT 金额
-	ToAddress string  `json:"to_address"` // 收款地址
-	OrderNo   string  `json:"order_no"`   // 可选：监听服务已匹配的订单号
-}
-
-// handleUSDT 处理 USDT 到账回调。
-// 通过 HMAC 签名校验后，按订单号或金额匹配待支付订单并完成充值。
+// handleUSDT 处理 BEpusdt 网关的 USDT 到账回调（POST JSON）。
+// 验签后按 order_id 完成充值；status=2 时须回 "ok"。
 func (s *Server) handleUSDT(c *gin.Context) {
+	provider, ok := s.orderService.USDTProvider()
+	if !ok {
+		c.String(http.StatusServiceUnavailable, "usdt disabled")
+		return
+	}
+
 	body, _ := io.ReadAll(io.LimitReader(c.Request.Body, maxBodySize))
 
-	if !s.verifyInternalSignature(c, body) {
-		slog.Warn("usdt webhook signature invalid")
-		c.String(http.StatusUnauthorized, "invalid signature")
+	notification, err := provider.VerifyNotification(c.Request.Context(), string(body), nil)
+	if err != nil {
+		slog.Error("usdt verify failed", "error", err)
+		c.String(http.StatusBadRequest, "verify failed")
 		return
 	}
-
-	var payload usdtNotifyPayload
-	if err := json.Unmarshal(body, &payload); err != nil {
-		c.String(http.StatusBadRequest, "invalid payload")
+	if notification == nil || !notification.Success {
+		// status=1(待支付)/3(超时) 或无关事件：回 200 即可（BEpusdt 对非成功回调只需 200）。
+		c.String(http.StatusOK, provider.SuccessResponse())
 		return
-	}
-
-	orderNo := payload.OrderNo
-	if orderNo == "" {
-		// 监听服务未匹配订单号时，按金额匹配
-		order, err := s.orderService.Store().FindPendingOrderByUSDTAmount(payload.Amount)
-		if err != nil {
-			slog.Warn("usdt no matching order", "amount", payload.Amount, "tx", payload.TxHash)
-			// 回 200 避免重复推送（金额不匹配可能是无关转账）
-			c.String(http.StatusOK, "success")
-			return
-		}
-		orderNo = order.OrderNo
 	}
 
 	if _, err := s.orderService.HandlePaymentSuccess(
-		c.Request.Context(), orderNo, payload.TxHash, payload.Amount,
+		c.Request.Context(), notification.OrderNo, notification.TradeNo, notification.Amount,
 	); err != nil {
-		slog.Error("usdt fulfillment failed", "orderNo", orderNo, "error", err)
+		slog.Error("usdt fulfillment failed", "orderNo", notification.OrderNo, "error", err)
 		c.String(http.StatusInternalServerError, "handle failed")
 		return
 	}
 
-	s.notifyCompleted(orderNo)
-	c.String(http.StatusOK, "success")
-}
-
-// verifyInternalSignature 校验内部 HMAC 签名（复用 sub2api.webhook_secret）。
-// 签名格式：hex(HMAC_SHA256(secret, timestamp + "." + body))，5 分钟有效。
-func (s *Server) verifyInternalSignature(c *gin.Context, body []byte) bool {
-	timestamp := c.GetHeader("X-Signature-Timestamp")
-	signature := c.GetHeader("X-Signature")
-	if timestamp == "" || signature == "" {
-		return false
-	}
-
-	ts, err := strconv.ParseInt(timestamp, 10, 64)
-	if err != nil {
-		return false
-	}
-	if time.Since(time.Unix(ts, 0)) > 5*time.Minute {
-		return false
-	}
-
-	mac := hmac.New(sha256.New, []byte(s.cfg.Sub2API.WebhookSecret))
-	mac.Write([]byte(timestamp))
-	mac.Write([]byte("."))
-	mac.Write(body)
-	expected := hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(expected), []byte(signature))
+	s.notifyCompleted(notification.OrderNo)
+	c.String(http.StatusOK, provider.SuccessResponse())
 }
 
 func (s *Server) notifyCompleted(orderNo string) {

@@ -6,7 +6,10 @@ import "context"
 // 支付方式标识常量。
 const (
 	MethodEasyPay = "easypay"
-	MethodUSDT    = "usdt"
+	// MethodUSDTTRC20 / MethodUSDTBEP20 是按链区分的 USDT 支付方式标识，
+	// 分别映射到 BEpusdt 的 trade_type usdt.trc20 / usdt.bep20。
+	MethodUSDTTRC20 = "usdt_trc20"
+	MethodUSDTBEP20 = "usdt_bep20"
 )
 
 // CreateResult 是创建支付的结果。

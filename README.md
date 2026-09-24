@@ -5,8 +5,8 @@
 ## 特性
 
 - 🤖 **纯菜单交互** — 常驻底部菜单 + Inline 键盘，额度/支付方式一键选择
-- 💳 **易支付** — Dulupay V2 协议（支付宝/微信），页面跳转（api/pay/submit）+ SHA256WithRSA 签名
-- ₮ **USDT** — 自托管 TRC20 收款，**内置 TronGrid 链上轮询** + 唯一金额匹配，无需外部监听服务
+- 💳 **易支付** — Dulupay V2 协议（支付宝/微信），API 下单并在 Telegram 显示二维码，SHA256WithRSA 签名
+- ₮ **USDT** — 通过 BEpusdt 网关支持 TRC20 / BEP20，网关负责收款确认及汇率换算
 - 🔗 **sub2api 集成** — HMAC 签名的 webhook 回调，幂等充值
 - 🔁 **可靠性** — 订单状态机 + 自动过期 + 回调重试（指数退避）
 - 📦 **独立部署** — 与 sub2api 解耦，独立数据库，Docker 一键启动
@@ -70,7 +70,16 @@ Bot:  ✅ 支付成功！50.00 元已到账。
 
 ### 1. 配置
 
-复制并编辑 `config.yaml`：
+使用 Go 1.23 或更新版本。`config.yaml` 是可提交的配置模板；复制后仅编辑本地文件：
+
+```bash
+cp config.yaml config.local.yaml
+cp .env.example .env
+chmod 600 config.local.yaml .env
+```
+
+在 `.env` 设置 `POSTGRES_PASSWORD`，并将同一密码填入 `config.local.yaml` 的 `database.dsn`。
+两份本地配置均不进入 Git 或 Docker 构建上下文。下面为本地配置示例：
 
 ```yaml
 telegram:
@@ -92,12 +101,11 @@ payment:
     default_channel: "alipay"                 # alipay / wxpay / qqpay / bank
   usdt:
     enabled: true
-    wallet_address: "你的USDT-TRC20收款地址"
-    cny_rate: 7.2
-    unique_amount: true
-    poll:                                     # 内置链上轮询（推荐）
-      enabled: true
-      trongrid_api_key: "可选，提升频率限制"
+    base_url: "http://bepusdt:8080"
+    api_token: "BEpusdt Integration Token"
+    fiat: "CNY"
+    trc20_enabled: true
+    bep20_enabled: true
 
 sub2api:
   webhook_url: "https://你的sub2api域名/api/v1/payment/webhook/tgshop"
@@ -109,13 +117,13 @@ sub2api:
 **本地开发（long polling）：**
 
 ```bash
-go run ./cmd/bot -config config.yaml
+go run ./cmd/bot -config config.local.yaml
 ```
 
 **Docker：**
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
 ### 3. sub2api 集成
@@ -156,6 +164,6 @@ pending ──支付成功──▶ paid ──sub2api充值成功──▶ comp
 ## 安全说明
 
 - 易支付回调按 Dulupay V2（SHA256WithRSA）平台公钥验签 + timestamp 时间窗防重放
-- USDT / sub2api 回调使用 HMAC-SHA256 + 时间戳防重放
+- USDT 回调使用 BEpusdt 的 MD5 + Token 验签；sub2api 请求使用 HMAC-SHA256 + 时间戳
 - ⚠️ 网络暴露的 webhook 端点务必置于 HTTPS 之后
-- ⚠️ `config.yaml` 含密钥，生产环境请用 secrets 管理，勿提交仓库
+- ⚠️ 真实密钥仅放在 `config.local.yaml` 和 `.env`，勿提交仓库。Compose 挂载本地配置；已有容器需要在部署时重建才会切换挂载路径。

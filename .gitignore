@@ -5,6 +5,7 @@ bin/
 
 # Local config with secrets
 config.local.yaml
+.env
 
 # OS
 .DS_Store

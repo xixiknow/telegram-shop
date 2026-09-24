@@ -5,6 +5,7 @@ go 1.23
 require (
 	github.com/gin-gonic/gin v1.9.1
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/viper v1.18.2
 	gorm.io/driver/postgres v1.5.4
 	gorm.io/gorm v1.25.5

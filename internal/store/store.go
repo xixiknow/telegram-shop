@@ -52,13 +52,26 @@ func (s *Store) UpsertUser(u *model.TGUser) error {
 	if err != nil {
 		return err
 	}
-	// 仅更新资料字段，保留已绑定的 sub2api_email
+	// 仅更新资料字段，保留已绑定的 sub2api_email 与用户手动选择的 language_code。
 	return s.db.Model(&existing).Updates(map[string]any{
-		"username":      u.Username,
-		"first_name":    u.FirstName,
-		"last_name":     u.LastName,
-		"language_code": u.LanguageCode,
+		"username":   u.Username,
+		"first_name": u.FirstName,
+		"last_name":  u.LastName,
 	}).Error
+}
+
+// SetLanguage 设置用户的语言偏好（手动切换时调用）。
+func (s *Store) SetLanguage(tgUserID int64, lang string) error {
+	res := s.db.Model(&model.TGUser{}).
+		Where("telegram_user_id = ?", tgUserID).
+		Update("language_code", lang)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // GetUserByTelegramID 按 Telegram User ID 查询用户。
@@ -78,7 +91,7 @@ func (s *Store) GetUserByTelegramID(tgUserID int64) (*model.TGUser, error) {
 func (s *Store) BindEmail(tgUserID int64, email string) error {
 	res := s.db.Model(&model.TGUser{}).
 		Where("telegram_user_id = ?", tgUserID).
-		Update("sub2api_email", email)
+		Update("Sub2APIEmail", email)
 	if res.Error != nil {
 		return res.Error
 	}
@@ -118,6 +131,25 @@ func (s *Store) ListOrdersByUser(tgUserID int64, limit int) ([]model.TGOrder, er
 	return orders, err
 }
 
+// FindActivePendingOrder 返回用户当前「待支付且未过期」的订单（如有）。
+// 用于限制每个用户同时只能有一笔有效未付款订单；已过期/已终态的不计入。
+// 无匹配时返回 ErrNotFound。
+func (s *Store) FindActivePendingOrder(tgUserID int64, now time.Time) (*model.TGOrder, error) {
+	var o model.TGOrder
+	err := s.db.
+		Where("telegram_user_id = ? AND status = ? AND expires_at > ?",
+			tgUserID, model.OrderStatusPending, now).
+		Order("created_at DESC").
+		First(&o).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
 // UpdateOrderFields 更新订单的指定字段。
 func (s *Store) UpdateOrderFields(orderNo string, fields map[string]any) error {
 	return s.db.Model(&model.TGOrder{}).
@@ -149,35 +181,16 @@ func (s *Store) ExpirePendingOrders(now time.Time) (int64, error) {
 	return res.RowsAffected, res.Error
 }
 
-// FindPaidOrderByUSDTAmount 用于 USDT 金额匹配：按支付方式 + 精确金额查找待支付订单。
-func (s *Store) FindPendingOrderByUSDTAmount(payAmount float64) (*model.TGOrder, error) {
-	var o model.TGOrder
-	err := s.db.Where(
-		"payment_method = ? AND pay_currency = ? AND status = ? AND pay_amount = ?",
-		model.PaymentMethodUSDT, "USDT", model.OrderStatusPending, payAmount,
-	).Order("created_at ASC").First(&o).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &o, nil
-}
-
-// FindPendingOrderByUSDTAmountRange 在 [low, high] 金额区间内匹配最早的待支付 USDT 订单。
-// 用于链上轮询：到账金额与应付金额可能有极小的浮点/精度差异，按区间匹配更稳健。
-func (s *Store) FindPendingOrderByUSDTAmountRange(low, high float64) (*model.TGOrder, error) {
-	var o model.TGOrder
-	err := s.db.Where(
-		"payment_method = ? AND pay_currency = ? AND status = ? AND pay_amount >= ? AND pay_amount <= ?",
-		model.PaymentMethodUSDT, "USDT", model.OrderStatusPending, low, high,
-	).Order("created_at ASC").First(&o).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &o, nil
+// ListStuckPaidOrders 返回已支付但充值未完成的订单（status=paid 且回调失败/未完成），
+// 用于后台自动补单重试。按创建时间升序，最多返回 limit 条。
+func (s *Store) ListStuckPaidOrders(limit int) ([]model.TGOrder, error) {
+	var orders []model.TGOrder
+	err := s.db.
+		Where("status = ? AND sub2_api_callback_status IN ?",
+			model.OrderStatusPaid,
+			[]string{model.CallbackStatusFailed, model.CallbackStatusPending}).
+		Order("created_at ASC").
+		Limit(limit).
+		Find(&orders).Error
+	return orders, err
 }

@@ -4,7 +4,7 @@ build:
 	go build -o bin/telegram-shop ./cmd/bot
 
 run:
-	go run ./cmd/bot -config config.yaml
+	go run ./cmd/bot -config config.local.yaml
 
 test:
 	go test ./...

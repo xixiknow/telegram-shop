@@ -14,9 +14,15 @@ const (
 
 // 支付方式常量。
 const (
-	PaymentMethodEasyPay = "easypay"
-	PaymentMethodUSDT    = "usdt"
+	PaymentMethodEasyPay   = "easypay"
+	PaymentMethodUSDTTRC20 = "usdt_trc20"
+	PaymentMethodUSDTBEP20 = "usdt_bep20"
 )
+
+// IsUSDTMethod 判断支付方式是否为 USDT（任一链）。
+func IsUSDTMethod(method string) bool {
+	return method == PaymentMethodUSDTTRC20 || method == PaymentMethodUSDTBEP20
+}
 
 // sub2api 回调状态常量。
 const (
@@ -51,10 +57,11 @@ type TGOrder struct {
 	TelegramUsername string `gorm:"size:255" json:"telegram_username"`
 
 	// 金额信息
-	Amount        float64 `gorm:"type:decimal(20,2);not null" json:"amount"`          // 充值额度（CNY）
-	PayAmount     float64 `gorm:"type:decimal(20,8);not null" json:"pay_amount"`      // 实际支付金额（按支付方式币种）
-	PayCurrency   string  `gorm:"size:10;default:'CNY'" json:"pay_currency"`          // CNY / USDT
-	PaymentMethod string  `gorm:"size:30;not null" json:"payment_method"`            // easypay / usdt
+	Amount        float64 `gorm:"type:decimal(20,2);not null" json:"amount"`       // 充值额度（CNY）
+	GiftAmount    float64 `gorm:"type:decimal(20,2);default:0" json:"gift_amount"` // 活动赠送金额（CNY），合入余额一起充
+	PayAmount     float64 `gorm:"type:decimal(20,8);not null" json:"pay_amount"`   // 实际支付金额（按支付方式币种）
+	PayCurrency   string  `gorm:"size:10;default:'CNY'" json:"pay_currency"`       // CNY / USDT
+	PaymentMethod string  `gorm:"size:30;not null" json:"payment_method"`          // easypay / usdt
 
 	// 状态
 	Status string `gorm:"size:30;default:'pending';index" json:"status"`
