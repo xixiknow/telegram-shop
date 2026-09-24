@@ -131,6 +131,13 @@ docker compose up -d --build
 
 参见 [`docs/SUB2API_INTEGRATION.md`](docs/SUB2API_INTEGRATION.md)，在 sub2api 侧添加 tgshop webhook 接收端点。
 
+## CI 与镜像
+
+推送 `main` 后，GitHub Actions 运行格式检查、带竞态检测的测试（包含独立 PostgreSQL 集成测试）、`go vet` 和编译。
+通过后构建 `linux/amd64` 镜像并发布到 `ghcr.io/xixiknow/telegram-shop:latest` 以及 `sha-<完整提交 SHA>` 标签。
+工作流最后核验已发布的镜像摘要；具体 digest 可在 Actions 运行摘要查看。PR 运行相同验证并构建镜像，但不发布。
+CI 不执行部署，也不修改运行中的应用。生产配置需在部署时单独挂载。
+
 ## 目录结构
 
 ```
