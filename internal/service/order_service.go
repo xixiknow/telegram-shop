@@ -26,6 +26,7 @@ type OrderService struct {
 	store     *store.Store
 	providers map[string]payment.Provider
 	sub2api   *sub2api.Client
+	now       func() time.Time
 }
 
 // NewOrderService 创建订单服务。
@@ -35,7 +36,7 @@ func NewOrderService(
 	providers map[string]payment.Provider,
 	s2a *sub2api.Client,
 ) *OrderService {
-	return &OrderService{cfg: cfg, store: st, providers: providers, sub2api: s2a}
+	return &OrderService{cfg: cfg, store: st, providers: providers, sub2api: s2a, now: time.Now}
 }
 
 // QueryBalance 透传到 sub2api 客户端，查询指定 email 用户的余额。
@@ -71,7 +72,11 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (*m
 		return nil, nil, fmt.Errorf("sub2api email not bound")
 	}
 
-	now := time.Now()
+	now := s.now()
+	quote, err := s.cfg.QuoteAt(in.AmountCNY, now)
+	if err != nil {
+		return nil, nil, fmt.Errorf("quote recharge: %w", err)
+	}
 
 	// 限制：每个用户同时只能有一笔待支付且未过期的订单（已过期/已终态不计）。
 	// 在向支付方下单之前检查，避免产生无谓的第三方订单。
@@ -84,20 +89,21 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (*m
 	orderNo := generateOrderNo()
 	expiresAt := now.Add(time.Duration(s.cfg.Payment.OrderTimeoutMinutes) * time.Minute)
 
-	result, err := provider.Create(ctx, orderNo, in.AmountCNY)
+	result, err := provider.Create(ctx, orderNo, quote.PayableCNY)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create payment: %w", err)
 	}
 
-	// 活动赠送：以下单时刻为准锁定赠额（活动结束后付款不影响已下单订单）。
-	giftAmount := s.cfg.GiftAmountAt(in.AmountCNY, now)
-
+	// 将下单前的报价保存为快照；付款和补单不再读取实时活动配置。
 	order := &model.TGOrder{
 		OrderNo:               orderNo,
 		TelegramUserID:        in.TelegramUserID,
 		TelegramUsername:      in.TelegramUsername,
-		Amount:                in.AmountCNY,
-		GiftAmount:            giftAmount,
+		Amount:                quote.Amount,
+		GiftAmount:            quote.GiftAmount,
+		DiscountAmount:        quote.DiscountAmount,
+		PromotionMode:         quote.PromotionMode,
+		PromotionPercent:      quote.PromotionPercent,
 		PayAmount:             result.PayAmount,
 		PayCurrency:           result.PayCurrency,
 		PaymentMethod:         in.PaymentMethod,
@@ -116,6 +122,9 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (*m
 		"orderNo", orderNo,
 		"tgUserID", in.TelegramUserID,
 		"amount", in.AmountCNY,
+		"payable_cny", quote.PayableCNY,
+		"credit_amount", quote.CreditAmount,
+		"promotion_mode", quote.PromotionMode,
 		"method", in.PaymentMethod,
 	)
 	return order, result, nil
@@ -177,13 +186,13 @@ func (s *OrderService) HandlePaymentSuccess(ctx context.Context, orderNo, tradeN
 
 func (s *OrderService) fulfill(ctx context.Context, order *model.TGOrder) error {
 	// 落账金额 = 充值额度 + 活动赠额（合入余额一起充）。
-	// 返利基数 = 充值额度（不含赠额），与标准支付路径口径一致。
+	// 返利基数 = 原价 - 减免金额；使用快照且不含赠额。
 	return s.sub2api.Recharge(ctx, sub2api.RechargeRequest{
 		OrderNo:    order.OrderNo,
 		TradeNo:    order.PaymentTradeNo,
 		Email:      order.Sub2APIEmail,
-		Amount:     order.Amount + order.GiftAmount,
-		BaseAmount: order.Amount,
+		Amount:     order.CreditAmount(),
+		BaseAmount: order.PayableCNY(),
 		Status:     "success",
 	})
 }
@@ -233,7 +242,7 @@ func (s *OrderService) RetryStuckOrders(ctx context.Context) []string {
 	var succeeded []string
 	for i := range orders {
 		o := orders[i]
-		updated, err := s.HandlePaymentSuccess(ctx, o.OrderNo, o.PaymentTradeNo, o.Amount)
+		updated, err := s.HandlePaymentSuccess(ctx, o.OrderNo, o.PaymentTradeNo, o.PayAmount)
 		if err != nil {
 			slog.Warn("retry stuck order still failing", "orderNo", o.OrderNo, "error", err)
 			continue
@@ -249,6 +258,9 @@ func (s *OrderService) RetryStuckOrders(ctx context.Context) []string {
 // isAllowedAmount 校验金额是否可下单：命中配置档位，或落在自定义金额区间 [MinAmount, MaxAmount] 内。
 // 自定义金额按两位小数（分）粒度校验，避免浮点误差。
 func (s *OrderService) isAllowedAmount(amount float64) bool {
+	if !config.ValidAmount(amount) {
+		return false
+	}
 	for _, a := range s.cfg.Amounts {
 		if a == amount {
 			return true

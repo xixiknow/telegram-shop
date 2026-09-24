@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"telegram-shop/internal/config"
 	"telegram-shop/internal/i18n"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -58,27 +59,36 @@ func languageKeyboard() tgbotapi.InlineKeyboardMarkup {
 }
 
 // amountKeyboard 根据配置的额度生成 inline 键盘，每行 2 个按钮。
-// giftFn 用于计算各档位的活动赠额（为 0 则按钮不显示赠送）。
-func amountKeyboard(lang i18n.Lang, amounts []float64, giftFn func(float64, time.Time) float64, now time.Time) tgbotapi.InlineKeyboardMarkup {
+// 报价与订单共用；callback 始终携带原面额，不信任客户端的优惠金额。
+func amountKeyboard(lang i18n.Lang, amounts []float64, quoteFn func(float64, time.Time) (config.RechargeQuote, error), now time.Time) tgbotapi.InlineKeyboardMarkup {
 	var rows [][]tgbotapi.InlineKeyboardButton
 	var row []tgbotapi.InlineKeyboardButton
 
-	for i, amount := range amounts {
+	for _, amount := range amounts {
 		label := fmt.Sprintf(i18n.T(lang, i18n.LabelAmountUnit), amount)
-		if giftFn != nil {
-			if g := giftFn(amount, now); g > 0 {
-				label = fmt.Sprintf(i18n.T(lang, i18n.LabelAmountGift), amount, g)
+		if quoteFn != nil {
+			q, err := quoteFn(amount, now)
+			if err != nil { // 例如极小面额折后不足一分，不展示不可购买的档位。
+				continue
+			}
+			if q.PromotionMode == config.PromotionDiscount {
+				label = fmt.Sprintf(i18n.T(lang, i18n.LabelAmountDiscount), amount, q.PayableCNY)
+			} else if q.GiftAmount > 0 {
+				label = fmt.Sprintf(i18n.T(lang, i18n.LabelAmountGift), amount, q.GiftAmount)
 			}
 		}
 		data := fmt.Sprintf("%s%g", cbAmountPrefix, amount)
 		row = append(row, tgbotapi.NewInlineKeyboardButtonData(label, data))
 
-		if len(row) == 2 || i == len(amounts)-1 {
+		if len(row) == 2 {
 			rows = append(rows, row)
 			row = nil
 		}
 	}
 	// 自定义金额按钮，独占一行。
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData(i18n.T(lang, i18n.BtnCustomAmount), cbCustomAmount),
 	))

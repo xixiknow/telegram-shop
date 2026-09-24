@@ -3,9 +3,7 @@ package config
 
 import (
 	"fmt"
-	"math"
 	"strings"
-	"time"
 
 	"github.com/spf13/viper"
 )
@@ -23,11 +21,12 @@ type Config struct {
 	Promotion PromotionConfig `mapstructure:"promotion"`
 }
 
-// PromotionConfig 是充值赠礼活动配置（按比例赠送，赠额合入余额一起充）。
+// PromotionConfig 是充值活动配置。未填写 Mode 的旧配置按 gift 处理。
 type PromotionConfig struct {
 	Enabled bool    `mapstructure:"enabled"`
-	Percent float64 `mapstructure:"percent"`  // 赠送比例，如 20 表示充 100 送 20
-	StartAt string  `mapstructure:"start_at"` // 活动开始，RFC3339 或 "2006-01-02 15:04:05"（本地时区）
+	Mode    string  `mapstructure:"mode"`     // discount / gift，互斥
+	Percent float64 `mapstructure:"percent"`  // discount: 减免百分比；gift: 赠送百分比
+	StartAt string  `mapstructure:"start_at"` // RFC3339 或 "2006-01-02 15:04:05"（Asia/Shanghai）
 	EndAt   string  `mapstructure:"end_at"`   // 活动结束，同上
 }
 
@@ -122,6 +121,11 @@ func (c *Config) validate() error {
 	if len(c.Amounts) == 0 {
 		return fmt.Errorf("amounts must not be empty")
 	}
+	for _, amount := range c.Amounts {
+		if !ValidAmount(amount) {
+			return fmt.Errorf("amounts must contain positive finite amounts with at most two decimals")
+		}
+	}
 	if c.MinAmount <= 0 {
 		c.MinAmount = 1
 	}
@@ -130,6 +134,9 @@ func (c *Config) validate() error {
 	}
 	if c.MinAmount > c.MaxAmount {
 		return fmt.Errorf("min_amount (%.2f) must not exceed max_amount (%.2f)", c.MinAmount, c.MaxAmount)
+	}
+	if !ValidAmount(c.MinAmount) || !ValidAmount(c.MaxAmount) {
+		return fmt.Errorf("min_amount and max_amount must be valid amounts")
 	}
 	if c.Sub2API.WebhookURL == "" {
 		return fmt.Errorf("sub2api.webhook_url is required")
@@ -163,7 +170,7 @@ func (c *Config) validate() error {
 			c.Payment.USDT.TimeoutSeconds = 15
 		}
 	}
-	return nil
+	return c.Promotion.validate()
 }
 
 // IsAdmin 判断给定的 Telegram User ID 是否为管理员。
@@ -174,47 +181,4 @@ func (c *Config) IsAdmin(userID int64) bool {
 		}
 	}
 	return false
-}
-
-// parsePromoTime 解析活动时间，支持 RFC3339 与 "2006-01-02 15:04:05"（按本地时区）。
-func parsePromoTime(s string) (time.Time, bool) {
-	s = trimSpace(s)
-	if s == "" {
-		return time.Time{}, false
-	}
-	if t, err := time.ParseInLocation(time.RFC3339, s, time.Local); err == nil {
-		return t, true
-	}
-	if t, err := time.ParseInLocation("2006-01-02 15:04:05", s, time.Local); err == nil {
-		return t, true
-	}
-	return time.Time{}, false
-}
-
-func trimSpace(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
-		s = s[1:]
-	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
-		s = s[:len(s)-1]
-	}
-	return s
-}
-
-// GiftAmountAt 返回在时刻 now、充值额度 amount 对应的赠送金额（保留两位小数）。
-// 活动未启用、不在时间窗内、或比例<=0 时返回 0。
-func (c *Config) GiftAmountAt(amount float64, now time.Time) float64 {
-	p := c.Promotion
-	if !p.Enabled || p.Percent <= 0 {
-		return 0
-	}
-	// 时间窗：start/end 任一未配置则视为该侧无限制。
-	if start, ok := parsePromoTime(p.StartAt); ok && now.Before(start) {
-		return 0
-	}
-	if end, ok := parsePromoTime(p.EndAt); ok && now.After(end) {
-		return 0
-	}
-	gift := amount * p.Percent / 100
-	return math.Round(gift*100) / 100
 }

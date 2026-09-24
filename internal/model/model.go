@@ -1,7 +1,10 @@
 // Package model 定义数据库实体与状态常量。
 package model
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // 订单状态常量。
 const (
@@ -57,11 +60,14 @@ type TGOrder struct {
 	TelegramUsername string `gorm:"size:255" json:"telegram_username"`
 
 	// 金额信息
-	Amount        float64 `gorm:"type:decimal(20,2);not null" json:"amount"`       // 充值额度（CNY）
-	GiftAmount    float64 `gorm:"type:decimal(20,2);default:0" json:"gift_amount"` // 活动赠送金额（CNY），合入余额一起充
-	PayAmount     float64 `gorm:"type:decimal(20,8);not null" json:"pay_amount"`   // 实际支付金额（按支付方式币种）
-	PayCurrency   string  `gorm:"size:10;default:'CNY'" json:"pay_currency"`       // CNY / USDT
-	PaymentMethod string  `gorm:"size:30;not null" json:"payment_method"`          // easypay / usdt
+	DiscountAmount   float64 `gorm:"type:decimal(20,2);not null;default:0" json:"discount_amount"` // 减免金额（CNY）
+	PromotionMode    string  `gorm:"size:20;not null;default:''" json:"promotion_mode"`
+	PromotionPercent float64 `gorm:"not null;default:0" json:"promotion_percent"`
+	Amount           float64 `gorm:"type:decimal(20,2);not null" json:"amount"`       // 充值额度（CNY）
+	GiftAmount       float64 `gorm:"type:decimal(20,2);default:0" json:"gift_amount"` // 活动赠送金额（CNY），合入余额一起充
+	PayAmount        float64 `gorm:"type:decimal(20,8);not null" json:"pay_amount"`   // 实际支付金额（按支付方式币种）
+	PayCurrency      string  `gorm:"size:10;default:'CNY'" json:"pay_currency"`       // CNY / USDT
+	PaymentMethod    string  `gorm:"size:30;not null" json:"payment_method"`          // easypay / usdt
 
 	// 状态
 	Status string `gorm:"size:30;default:'pending';index" json:"status"`
@@ -86,6 +92,16 @@ type TGOrder struct {
 
 // TableName 指定表名。
 func (TGOrder) TableName() string { return "tg_orders" }
+
+// CreditAmount 返回到账总额；旧赠送订单不依赖新增快照字段。
+func (o *TGOrder) CreditAmount() float64 {
+	return math.Round((o.Amount+o.GiftAmount)*100) / 100
+}
+
+// PayableCNY 返回锁定的人民币实付基数；不能用 USDT PayAmount 作为返利基数。
+func (o *TGOrder) PayableCNY() float64 {
+	return math.Round((o.Amount-o.DiscountAmount)*100) / 100
+}
 
 // IsFinal 返回订单是否已进入终态（不可再变更支付状态）。
 func (o *TGOrder) IsFinal() bool {

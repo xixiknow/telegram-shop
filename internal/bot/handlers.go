@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"strconv"
 	"strings"
 	"time"
 
+	"telegram-shop/internal/config"
 	"telegram-shop/internal/i18n"
 	"telegram-shop/internal/model"
 	"telegram-shop/internal/payment"
@@ -50,7 +50,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 	case strings.HasPrefix(data, cbAmountPrefix):
 		amountStr := strings.TrimPrefix(data, cbAmountPrefix)
-		amount, err := strconv.ParseFloat(amountStr, 64)
+		amount, err := parseAmount(amountStr)
 		if err != nil {
 			return
 		}
@@ -58,7 +58,7 @@ func (b *Bot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
 
 	case strings.HasPrefix(data, cbNetPrefix):
 		amountStr := strings.TrimPrefix(data, cbNetPrefix)
-		amount, err := strconv.ParseFloat(amountStr, 64)
+		amount, err := parseAmount(amountStr)
 		if err != nil {
 			return
 		}
@@ -80,7 +80,7 @@ func (b *Bot) handleMethodSelected(ctx context.Context, tgUserID, chatID int64, 
 		return
 	}
 	method := parts[0]
-	amount, err := strconv.ParseFloat(parts[1], 64)
+	amount, err := parseAmount(parts[1])
 	if err != nil {
 		return
 	}
@@ -105,6 +105,10 @@ func (b *Bot) handleMethodSelected(ctx context.Context, tgUserID, chatID int64, 
 		PaymentMethod:    method,
 	})
 	if err != nil {
+		if errors.Is(err, config.ErrInvalidQuote) {
+			b.sendText(chatID, i18n.T(lang, i18n.MsgQuoteUnavailable))
+			return
+		}
 		// 已有待支付订单：提示用户先完成，并附该订单的刷新按钮。
 		if errors.Is(err, service.ErrActivePendingOrder) && order != nil {
 			text := fmt.Sprintf(i18n.T(lang, i18n.MsgActivePendingOrder), order.OrderNo)
@@ -134,7 +138,7 @@ func (b *Bot) handleCheckOrder(_ context.Context, tgUserID, chatID int64, orderN
 	switch order.Status {
 	case model.OrderStatusCompleted:
 		b.sendMarkdown(chatID, fmt.Sprintf(
-			i18n.T(lang, i18n.MsgOrderCompleted), order.OrderNo, order.Amount,
+			i18n.T(lang, i18n.MsgOrderCompleted), order.OrderNo, order.CreditAmount(),
 		))
 	case model.OrderStatusPaid:
 		b.sendText(chatID, i18n.T(lang, i18n.MsgOrderPaid))
@@ -149,38 +153,32 @@ func (b *Bot) handleCheckOrder(_ context.Context, tgUserID, chatID int64, orderN
 
 // --- 菜单展示 ---
 
-// amountMenuText 返回充值额度菜单文案，活动期内附带赠送提示。
-func (b *Bot) amountMenuText(lang i18n.Lang) string {
-	gift := b.cfg.GiftAmountAt(100, time.Now())
-	if gift > 0 {
-		return fmt.Sprintf(
-			i18n.T(lang, i18n.MsgGiftBanner),
-			b.cfg.Promotion.Percent, 100+gift,
-		)
-	}
-	return i18n.T(lang, i18n.MsgChooseAmount)
-}
-
 func (b *Bot) showAmountMenu(tgUserID, chatID int64) {
 	lang := b.langOf(tgUserID)
-	out := tgbotapi.NewMessage(chatID, b.amountMenuText(lang))
+	now := time.Now()
+	out := tgbotapi.NewMessage(chatID, b.amountMenuText(lang, now))
 	out.ParseMode = tgbotapi.ModeMarkdown
-	out.ReplyMarkup = amountKeyboard(lang, b.cfg.Amounts, b.cfg.GiftAmountAt, time.Now())
+	out.ReplyMarkup = amountKeyboard(lang, b.cfg.Amounts, b.cfg.QuoteAt, now)
 	b.send(out)
 }
 
 func (b *Bot) editToAmountMenu(tgUserID, chatID int64, messageID int) {
 	lang := b.langOf(tgUserID)
-	edit := tgbotapi.NewEditMessageText(chatID, messageID, b.amountMenuText(lang))
+	now := time.Now()
+	edit := tgbotapi.NewEditMessageText(chatID, messageID, b.amountMenuText(lang, now))
 	edit.ParseMode = tgbotapi.ModeMarkdown
-	kb := amountKeyboard(lang, b.cfg.Amounts, b.cfg.GiftAmountAt, time.Now())
+	kb := amountKeyboard(lang, b.cfg.Amounts, b.cfg.QuoteAt, now)
 	edit.ReplyMarkup = &kb
 	b.send(edit)
 }
 
 func (b *Bot) editToMethodMenu(tgUserID, chatID int64, messageID int, amount float64) {
 	lang := b.langOf(tgUserID)
-	text := fmt.Sprintf(i18n.T(lang, i18n.MsgChooseMethod), amount)
+	text, err := b.paymentMenuText(lang, amount, time.Now(), false)
+	if err != nil {
+		b.sendText(chatID, i18n.T(lang, i18n.MsgQuoteUnavailable))
+		return
+	}
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	edit.ParseMode = tgbotapi.ModeMarkdown
 	kb := methodKeyboard(lang, amount, b.cfg.Payment.EasyPay.Enabled, b.cfg.Payment.USDT.Enabled)
@@ -191,7 +189,11 @@ func (b *Bot) editToMethodMenu(tgUserID, chatID int64, messageID int, amount flo
 // showMethodMenu 以新消息形式展示支付方式菜单（用于自定义金额输入后，无可编辑的原消息）。
 func (b *Bot) showMethodMenu(tgUserID, chatID int64, amount float64) {
 	lang := b.langOf(tgUserID)
-	text := fmt.Sprintf(i18n.T(lang, i18n.MsgChooseMethod), amount)
+	text, err := b.paymentMenuText(lang, amount, time.Now(), false)
+	if err != nil {
+		b.sendText(chatID, i18n.T(lang, i18n.MsgQuoteUnavailable))
+		return
+	}
 	out := tgbotapi.NewMessage(chatID, text)
 	out.ParseMode = tgbotapi.ModeMarkdown
 	out.ReplyMarkup = methodKeyboard(lang, amount, b.cfg.Payment.EasyPay.Enabled, b.cfg.Payment.USDT.Enabled)
@@ -236,20 +238,19 @@ func parseAmount(s string) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if v <= 0 {
-		return 0, fmt.Errorf("non-positive amount")
-	}
-	// 拒绝超过两位小数（按分计）。
-	cents := math.Round(v * 100)
-	if math.Abs(v*100-cents) > 1e-6 {
-		return 0, fmt.Errorf("more than 2 decimals")
+	if !config.ValidAmount(v) {
+		return 0, fmt.Errorf("invalid amount")
 	}
 	return v, nil
 }
 
 func (b *Bot) editToNetworkMenu(tgUserID, chatID int64, messageID int, amount float64) {
 	lang := b.langOf(tgUserID)
-	text := fmt.Sprintf(i18n.T(lang, i18n.MsgChooseNetwork), amount)
+	text, err := b.paymentMenuText(lang, amount, time.Now(), true)
+	if err != nil {
+		b.sendText(chatID, i18n.T(lang, i18n.MsgQuoteUnavailable))
+		return
+	}
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	edit.ParseMode = tgbotapi.ModeMarkdown
 	kb := networkKeyboard(lang, amount, b.cfg.Payment.USDT.TRC20Enabled, b.cfg.Payment.USDT.BEP20Enabled)
@@ -272,10 +273,12 @@ func (b *Bot) showOrders(tgUserID, chatID int64) {
 	var sb strings.Builder
 	sb.WriteString(i18n.T(lang, i18n.MsgRecentOrders))
 	for _, o := range orders {
-		sb.WriteString(fmt.Sprintf(
-			i18n.T(lang, i18n.MsgOrderLine),
-			o.OrderNo, o.Amount, paymentMethodLabel(lang, o.PaymentMethod), statusLabel(lang, o.Status),
-		))
+		sb.WriteString(fmt.Sprintf(i18n.T(lang, i18n.LabelOrderNo), o.OrderNo))
+		sb.WriteString(orderAmountText(lang, &o))
+		if model.IsUSDTMethod(o.PaymentMethod) {
+			sb.WriteString(fmt.Sprintf(i18n.T(lang, i18n.LabelPayAmount), strconv.FormatFloat(o.PayAmount, 'f', -1, 64)))
+		}
+		sb.WriteString(paymentMethodLabel(lang, o.PaymentMethod) + " | " + statusLabel(lang, o.Status) + "\n\n")
 	}
 	b.sendMarkdown(chatID, sb.String())
 }
@@ -337,10 +340,7 @@ func (b *Bot) sendEasyPayPaymentInfo(lang i18n.Lang, chatID int64, order *model.
 	var sb strings.Builder
 	sb.WriteString(i18n.T(lang, i18n.MsgOrderCreated))
 	sb.WriteString(fmt.Sprintf(i18n.T(lang, i18n.LabelOrderNo), order.OrderNo))
-	sb.WriteString(fmt.Sprintf(i18n.T(lang, i18n.LabelRechargeAmt), order.Amount))
-	if order.GiftAmount > 0 {
-		sb.WriteString(fmt.Sprintf(i18n.T(lang, i18n.LabelGiftLine), order.GiftAmount, order.Amount+order.GiftAmount))
-	}
+	sb.WriteString(orderAmountText(lang, order))
 
 	// 有二维码内容（qrcode 模式）→ Telegram 内发图，用户用对应 App 扫码付款。
 	if result.QRCode != "" {
@@ -385,10 +385,7 @@ func (b *Bot) sendUSDTPaymentInfo(lang i18n.Lang, chatID int64, order *model.TGO
 	var sb strings.Builder
 	sb.WriteString(i18n.T(lang, i18n.MsgOrderCreated))
 	sb.WriteString(fmt.Sprintf(i18n.T(lang, i18n.LabelOrderNo), order.OrderNo))
-	sb.WriteString(fmt.Sprintf(i18n.T(lang, i18n.LabelRechargeAmt), order.Amount))
-	if order.GiftAmount > 0 {
-		sb.WriteString(fmt.Sprintf(i18n.T(lang, i18n.LabelGiftLine), order.GiftAmount, order.Amount+order.GiftAmount))
-	}
+	sb.WriteString(orderAmountText(lang, order))
 	sb.WriteString(fmt.Sprintf(i18n.T(lang, i18n.LabelPayNetwork), network))
 	sb.WriteString(fmt.Sprintf(i18n.T(lang, i18n.LabelPayAmount), payAmount))
 	sb.WriteString(fmt.Sprintf(i18n.T(lang, i18n.LabelWallet), wallet))

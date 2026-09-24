@@ -21,6 +21,7 @@ Body:
     "trade_no": "第三方交易号",
     "email":    "user@example.com",
     "amount":   50.00,
+    "base_amount": 45.00,
     "status":   "success"
   }
 ```
@@ -28,6 +29,8 @@ Body:
 sub2api 校验签名（HMAC-SHA256 + 5 分钟时间窗防重放）后，按 `email` 找到用户，
 为其充值 `amount` 元余额，返回 `HTTP 200` + body `"success"`。
 **幂等**：同一 `order_no` 重复回调只充值一次。
+
+`amount` 是到账总额（面额 + 赠额），`base_amount` 是邀请返利的人民币实付基数（面额 − 减免额）。上述示例为九折：付 45 元到账 50 元。赠送示例：付 50 元赠 5 元时，`amount=55`、`base_amount=50`。USDT 订单仍传人民币实付基数。两个金额均使用持久化订单快照，补单不重新计算活动。
 
 ## 主仓库已新增/改动的文件
 

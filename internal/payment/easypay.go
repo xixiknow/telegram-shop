@@ -91,7 +91,7 @@ func (e *EasyPay) Create(ctx context.Context, orderNo string, amountCNY float64)
 		"out_trade_no": orderNo,
 		"notify_url":   e.notifyURL,
 		"return_url":   e.returnURL,
-		"name":         fmt.Sprintf("余额充值 %.2f 元", amountCNY),
+		"name":         "账户余额充值",
 		"money":        strconv.FormatFloat(amountCNY, 'f', 2, 64),
 		"clientip":     "127.0.0.1",
 		"device":       "pc",

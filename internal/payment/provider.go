@@ -33,7 +33,7 @@ type Notification struct {
 type Provider interface {
 	// Method 返回支付方式标识（easypay / usdt）。
 	Method() string
-	// Create 发起支付。orderNo 为商户订单号，amountCNY 为充值额度（人民币）。
+	// Create 发起支付。amountCNY 是优惠后的应付人民币金额，未必等于到账额度。
 	Create(ctx context.Context, orderNo string, amountCNY float64) (*CreateResult, error)
 	// VerifyNotification 解析并验签回调。GET 回调传 query string，POST 传 body。
 	// 返回 nil notification 表示无关事件（调用方应回 200）。

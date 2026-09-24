@@ -11,18 +11,27 @@ const (
 	BtnLanguage = "btn.language"
 
 	// inline 按钮
-	BtnBack         = "btn.back"
-	BtnEasyPay      = "btn.easypay"
-	BtnUSDT         = "btn.usdt"
-	BtnTRC20        = "btn.trc20"
-	BtnBEP20        = "btn.bep20"
-	BtnPay          = "btn.pay"
-	BtnRefresh      = "btn.refresh"
-	BtnLangZH       = "btn.lang.zh"
-	BtnLangEN       = "btn.lang.en"
-	BtnCustomAmount = "btn.custom_amount"
-	LabelAmountUnit = "label.amount_unit" // "%g 元" 单位，仅用于额度按钮格式
-	LabelAmountGift = "label.amount_gift" // 带赠送的额度按钮
+	BtnBack             = "btn.back"
+	BtnEasyPay          = "btn.easypay"
+	BtnUSDT             = "btn.usdt"
+	BtnTRC20            = "btn.trc20"
+	BtnBEP20            = "btn.bep20"
+	BtnPay              = "btn.pay"
+	BtnRefresh          = "btn.refresh"
+	BtnLangZH           = "btn.lang.zh"
+	BtnLangEN           = "btn.lang.en"
+	BtnCustomAmount     = "btn.custom_amount"
+	LabelAmountUnit     = "label.amount_unit" // "%g 元" 单位，仅用于额度按钮格式
+	LabelAmountGift     = "label.amount_gift" // 带赠送的额度按钮
+	LabelAmountDiscount = "label.amount_discount"
+	MsgDiscountBanner   = "msg.discount_banner"
+	LabelPromoStart     = "label.promo_start"
+	LabelPromoEnd       = "label.promo_end"
+	MsgQuoteTiming      = "msg.quote_timing"
+	MsgQuoteUnavailable = "msg.quote_unavailable"
+	LabelDiscountLine   = "label.discount_line"
+	LabelPayCNY         = "label.pay_cny"
+	LabelCreditAmount   = "label.credit_amount"
 
 	// 通用提示
 	MsgUseMenu       = "msg.use_menu"
@@ -119,12 +128,21 @@ const (
 
 var catalog = map[Lang]map[string]string{
 	ZH: {
-		BtnShop:     "🛒 充值",
-		BtnOrders:   "📋 我的订单",
-		BtnBalance:  "💰 余额",
-		BtnAccount:  "👤 我的账号",
-		BtnHelp:     "❓ 帮助",
-		BtnLanguage: "🌐 语言",
+		LabelAmountDiscount: "💰 %g 元 · 付 %.2f",
+		MsgDiscountBanner:   "🎉 *限时折扣*：充值立减 *%g%%*！\n例：到账 100 元，仅付 %.2f 元。\n",
+		LabelPromoStart:     "开始：%s（上海时间）\n",
+		LabelPromoEnd:       "截止：%s（上海时间）\n",
+		MsgQuoteTiming:      "优惠以创建订单时为准，已创建订单在有效期内保留优惠。\n",
+		MsgQuoteUnavailable: "当前金额无法生成有效报价（折后应付至少 0.01 元）。请返回充值菜单，选择其他金额。",
+		LabelDiscountLine:   "🎉 优惠：*%g%%*，减免 *%.2f 元*\n",
+		LabelPayCNY:         "应付人民币：*%.2f 元*\n",
+		LabelCreditAmount:   "实际到账：*%.2f 元*\n",
+		BtnShop:             "🛒 充值",
+		BtnOrders:           "📋 我的订单",
+		BtnBalance:          "💰 余额",
+		BtnAccount:          "👤 我的账号",
+		BtnHelp:             "❓ 帮助",
+		BtnLanguage:         "🌐 语言",
 
 		BtnBack:         "⬅️ 返回",
 		BtnEasyPay:      "💳 易支付（支付宝）",
@@ -164,9 +182,9 @@ var catalog = map[Lang]map[string]string{
 			"流程：绑定邮箱 → 选择额度 → 选择支付方式 → 完成支付 → 自动到账",
 
 		MsgChooseAmount:       "请选择充值额度：",
-		MsgGiftBanner:         "🎁 *充值有礼*：本期充值额外赠送 *%g%%*！\n例：充 100 元到账 %.2f 元。\n\n请选择充值额度：",
-		MsgChooseMethod:       "充值额度：*%g 元*\n\n请选择支付方式：",
-		MsgChooseNetwork:      "充值额度：*%g 元*\n\n请选择 USDT 网络：",
+		MsgGiftBanner:         "🎁 *充值有礼*：本期充值额外赠送 *%g%%*！\n例：充 100 元到账 %.2f 元。\n",
+		MsgChooseMethod:       "请选择支付方式：",
+		MsgChooseNetwork:      "请选择 USDT 网络：",
 		MsgCustomAmountPrompt: "请输入充值金额（%g ~ %g 元，支持两位小数）：",
 		MsgAmountInvalid:      "❌ 金额无效。请输入 %g ~ %g 元之间的数字（最多两位小数）。",
 
@@ -195,7 +213,7 @@ var catalog = map[Lang]map[string]string{
 		MsgOrderCreated:    "🧾 *订单已创建*\n\n",
 		LabelOrderNo:       "订单号：`%s`\n",
 		LabelRechargeAmt:   "充值额度：*%.2f 元*\n",
-		LabelGiftLine:      "🎁 活动赠送：*%.2f 元*\n实际到账：*%.2f 元*\n",
+		LabelGiftLine:      "🎁 活动赠送：*%.2f 元*\n",
 		LabelChannel:       "支付方式：*%s*\n",
 		MsgScanToPay:       "\n请用 *%s* 扫描下方二维码完成支付。",
 		MsgOrderValidNote:  "\n\n订单 %d 分钟内有效，到账后自动通知。",
@@ -206,7 +224,7 @@ var catalog = map[Lang]map[string]string{
 		LabelWallet:        "收款地址：\n`%s`\n",
 		MsgUSDTExactWarn:   "\n⚠️ 请按*精确金额*向上述地址转账。",
 
-		MsgPaySuccess: "✅ *支付成功！*\n\n订单号：`%s`\n充值额度：*%.2f 元*\n账号：`%s`\n\n余额已到账，感谢您的购买！",
+		MsgPaySuccess: "✅ *支付成功！*\n\n订单号：`%s`\n实际到账：*%.2f 元*\n账号：`%s`\n\n余额已到账，感谢您的购买！",
 
 		ChannelAlipay: "支付宝",
 		ChannelWxpay:  "微信",
@@ -225,12 +243,21 @@ var catalog = map[Lang]map[string]string{
 		MsgLanguageSet:    "✅ 已切换为中文。",
 	},
 	EN: {
-		BtnBalance:  "💰 Balance",
-		BtnShop:     "🛒 Recharge",
-		BtnOrders:   "📋 My Orders",
-		BtnAccount:  "👤 My Account",
-		BtnHelp:     "❓ Help",
-		BtnLanguage: "🌐 Language",
+		LabelAmountDiscount: "💰 ¥%g · pay ¥%.2f",
+		MsgDiscountBanner:   "🎉 *Limited-time offer*: *%g%% off*!\nE.g. get ¥100 credit, pay ¥%.2f.\n",
+		LabelPromoStart:     "Starts: %s (Asia/Shanghai)\n",
+		LabelPromoEnd:       "Ends: %s (Asia/Shanghai)\n",
+		MsgQuoteTiming:      "Offers are locked when the order is created and kept during its payment window.\n",
+		MsgQuoteUnavailable: "This amount cannot be quoted (payment must be at least ¥0.01). Return to Recharge and choose another amount.",
+		LabelDiscountLine:   "🎉 Discount: *%g%%*, saving *¥%.2f*\n",
+		LabelPayCNY:         "Amount due in CNY: *¥%.2f*\n",
+		LabelCreditAmount:   "Actual credit: *¥%.2f*\n",
+		BtnBalance:          "💰 Balance",
+		BtnShop:             "🛒 Recharge",
+		BtnOrders:           "📋 My Orders",
+		BtnAccount:          "👤 My Account",
+		BtnHelp:             "❓ Help",
+		BtnLanguage:         "🌐 Language",
 
 		BtnBack:         "⬅️ Back",
 		BtnEasyPay:      "💳 EasyPay (Alipay)",
@@ -270,9 +297,9 @@ var catalog = map[Lang]map[string]string{
 			"Flow: bind email → choose amount → choose payment → pay → auto credit",
 
 		MsgChooseAmount:       "Please choose a recharge amount:",
-		MsgGiftBanner:         "🎁 *Bonus*: extra *%g%%* on this recharge!\nE.g. pay ¥100, get ¥%.2f.\n\nPlease choose a recharge amount:",
-		MsgChooseMethod:       "Amount: *¥%g*\n\nPlease choose a payment method:",
-		MsgChooseNetwork:      "Amount: *¥%g*\n\nPlease choose a USDT network:",
+		MsgGiftBanner:         "🎁 *Bonus*: extra *%g%%* on this recharge!\nE.g. pay ¥100, get ¥%.2f.\n",
+		MsgChooseMethod:       "Please choose a payment method:",
+		MsgChooseNetwork:      "Please choose a USDT network:",
 		MsgCustomAmountPrompt: "Please enter the amount (¥%g ~ ¥%g, up to 2 decimals):",
 		MsgAmountInvalid:      "❌ Invalid amount. Please enter a number between ¥%g and ¥%g (max 2 decimals).",
 
@@ -301,7 +328,7 @@ var catalog = map[Lang]map[string]string{
 		MsgOrderCreated:    "🧾 *Order Created*\n\n",
 		LabelOrderNo:       "Order No: `%s`\n",
 		LabelRechargeAmt:   "Amount: *¥%.2f*\n",
-		LabelGiftLine:      "🎁 Bonus: *¥%.2f*\nActual credit: *¥%.2f*\n",
+		LabelGiftLine:      "🎁 Bonus: *¥%.2f*\n",
 		LabelChannel:       "Payment: *%s*\n",
 		MsgScanToPay:       "\nPlease scan the QR code below with *%s* to pay.",
 		MsgOrderValidNote:  "\n\nValid for %d minutes; you'll be notified once credited.",
@@ -312,7 +339,7 @@ var catalog = map[Lang]map[string]string{
 		LabelWallet:        "Address:\n`%s`\n",
 		MsgUSDTExactWarn:   "\n⚠️ Please transfer the *exact amount* to the address above.",
 
-		MsgPaySuccess: "✅ *Payment successful!*\n\nOrder No: `%s`\nAmount: *¥%.2f*\nAccount: `%s`\n\nBalance credited. Thank you for your purchase!",
+		MsgPaySuccess: "✅ *Payment successful!*\n\nOrder No: `%s`\nCredited: *¥%.2f*\nAccount: `%s`\n\nBalance credited. Thank you for your purchase!",
 
 		ChannelAlipay: "Alipay",
 		ChannelWxpay:  "WeChat Pay",

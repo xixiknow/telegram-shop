@@ -119,7 +119,7 @@ func (b *Bot) NotifyOrderCompleted(orderNo string) {
 	}
 	text := fmt.Sprintf(
 		i18n.T(b.langOf(order.TelegramUserID), i18n.MsgPaySuccess),
-		order.OrderNo, order.Amount, order.Sub2APIEmail,
+		order.OrderNo, order.CreditAmount(), order.Sub2APIEmail,
 	)
 	b.sendMarkdown(order.TelegramUserID, text)
 }
